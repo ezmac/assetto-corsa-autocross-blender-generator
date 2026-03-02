@@ -1,10 +1,22 @@
-import sys
-sys.path.insert(0, '/mnt/c/Users/tad/ax_maps/code/autocross-cone-thing')
+"""
+analyze_seneca.py — Quick color analysis of an autocross map image.
 
+Usage:
+    python analyze_seneca.py <image_path> [--code-dir <path>]
+
+Example:
+    python analyze_seneca.py source_images/Seneca_Grand_Prix_2021.jpg
+"""
+
+import argparse
 from PIL import Image
 import numpy as np
 
-img = Image.open('/mnt/c/Users/tad/ax_maps/Seneca_Grand_Prix_2021.jpg')
+p = argparse.ArgumentParser(description='Analyze cone colors in an autocross map image.')
+p.add_argument('image', help='Path to the map image')
+args = p.parse_args()
+
+img = Image.open(args.image)
 arr = np.array(img)
 
 print(f"Image size: {img.size} (WxH)")

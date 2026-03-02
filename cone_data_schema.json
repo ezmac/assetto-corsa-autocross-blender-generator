@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cone_data_schema.json",
+  "title": "ConeData",
+  "description": "Output of detect_cones.py — autocross cone positions in Blender world-space coordinates.",
+  "type": "object",
+  "required": [
+    "transform", "pointer_source",
+    "n_standing", "n_pointer", "n_green", "n_red", "n_blue",
+    "bounds", "standing", "pointers", "greens", "reds", "blues"
+  ],
+  "additionalProperties": false,
+  "properties": {
+
+    "transform": {
+      "description": "Coordinate transform from original image pixels to Blender world-space (metres).",
+      "oneOf": [
+        {
+          "description": "3-point affine transform (6-parameter). bx = ax[0]*px + ax[1]*py + ax[2]; by = ay[0]*px + ay[1]*py + ay[2].",
+          "type": "object",
+          "required": ["type", "ax", "ay"],
+          "additionalProperties": false,
+          "properties": {
+            "type":  { "const": "affine" },
+            "ax": {
+              "description": "[a11, a12, tx] — X-axis row of the affine matrix.",
+              "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+            },
+            "ay": {
+              "description": "[a21, a22, ty] — Y-axis row of the affine matrix.",
+              "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+            }
+          }
+        },
+        {
+          "description": "2-point uniform-scale transform. bx = scale*px + ox; by = -scale*py + oy.",
+          "type": "object",
+          "required": ["type", "scale", "ox", "oy"],
+          "additionalProperties": false,
+          "properties": {
+            "type":  { "const": "scale" },
+            "scale": { "type": "number", "description": "Metres per original-image pixel." },
+            "ox":    { "type": "number", "description": "X origin offset (metres)." },
+            "oy":    { "type": "number", "description": "Y origin offset (metres)." }
+          }
+        }
+      ]
+    },
+
+    "pointer_source": {
+      "description": "Which colour channel was used for pointer cone detection.",
+      "type": "string",
+      "enum": ["magenta", "orange"]
+    },
+
+    "n_standing": { "type": "integer", "minimum": 0, "description": "Number of standing (orange) cones detected." },
+    "n_pointer":  { "type": "integer", "minimum": 0, "description": "Number of pointer (lying-flat) cones detected." },
+    "n_green":    { "type": "integer", "minimum": 0, "description": "Number of timing-start (green) cones detected." },
+    "n_red":      { "type": "integer", "minimum": 0, "description": "Number of timing-end (red) cones detected." },
+    "n_blue":     { "type": "integer", "minimum": 0, "description": "Number of GCP reference (blue) dots detected." },
+
+    "bounds": {
+      "description": "Axis-aligned bounding box of all standing + pointer cone positions (metres).",
+      "type": "object",
+      "required": ["xmin", "xmax", "ymin", "ymax"],
+      "additionalProperties": false,
+      "properties": {
+        "xmin": { "type": "number" },
+        "xmax": { "type": "number" },
+        "ymin": { "type": "number" },
+        "ymax": { "type": "number" }
+      }
+    },
+
+    "standing": {
+      "description": "Upright (orange) cone positions.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/standing_cone" }
+    },
+
+    "pointers": {
+      "description": "Lying-flat pointer cone positions and orientations.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/pointer_cone" }
+    },
+
+    "greens": {
+      "description": "Timing start gate cone positions.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/base_cone" }
+    },
+
+    "reds": {
+      "description": "Timing end gate cone positions.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/base_cone" }
+    },
+
+    "blues": {
+      "description": "GCP (ground control point) reference dot positions.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/base_cone" }
+    }
+  },
+
+  "$defs": {
+
+    "base_cone": {
+      "description": "Minimal cone entry — Blender world-space position and source blob size.",
+      "type": "object",
+      "required": ["bx", "by", "type", "size"],
+      "additionalProperties": false,
+      "properties": {
+        "bx":   { "type": "number", "description": "Blender X coordinate (metres, east positive)." },
+        "by":   { "type": "number", "description": "Blender Y coordinate (metres, north positive)." },
+        "type": {
+          "type": "string",
+          "enum": ["standing", "pointer", "timing_start", "timing_end", "gcp"],
+          "description": "Cone role."
+        },
+        "size": { "type": "integer", "minimum": 1, "description": "Pixel area of the source blob at working resolution." }
+      }
+    },
+
+    "standing_cone": {
+      "description": "Upright (orange) cone.",
+      "allOf": [{ "$ref": "#/$defs/base_cone" }],
+      "properties": {
+        "type": { "const": "standing" }
+      }
+    },
+
+    "pointer_cone": {
+      "description": "Lying-flat pointer cone with orientation and snap metadata.",
+      "type": "object",
+      "required": ["bx", "by", "type", "size", "facing_deg"],
+      "additionalProperties": false,
+      "properties": {
+        "bx":   { "type": "number", "description": "Blender X coordinate (metres)." },
+        "by":   { "type": "number", "description": "Blender Y coordinate (metres)." },
+        "type": { "const": "pointer" },
+        "size": { "type": "integer", "minimum": 1 },
+        "facing_deg": {
+          "description": "Z-rotation angle (degrees, CCW from +X) so the pointer tip faces toward its standing cone. null if no standing cone was found nearby.",
+          "oneOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "nearest_standing_idx": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into the 'standing' array of the closest standing cone."
+        },
+        "snapped": {
+          "type": "boolean",
+          "description": "True when the position was moved to a physically correct 3-inch increment from its standing cone."
+        },
+        "snapped_to_timing": {
+          "type": "boolean",
+          "description": "True when snapping used a green/red timing cone as the anchor instead of an orange standing cone."
+        },
+        "split_from": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "Number of sub-cones this entry was split from when an oversized fused blob was decomposed by PCA."
+        }
+      }
+    }
+  }
+}

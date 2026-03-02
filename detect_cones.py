@@ -70,6 +70,21 @@ POINTER_MERGE_RADIUS = 4
 # Minimum connected-component size (px) to be considered a blob at all.
 MIN_BLOB_PX = 3
 
+# Pointer snap — physically correct spacing from the standing cone edge.
+# Gap is the clear space between adjacent cone surfaces (tip-to-base edge).
+POINTER_SNAP_GAP_M = 0.0762        # 3 inches tip-to-edge gap
+# Cone template dimensions (must match AC_POBJECT_MovableCone mesh in template).
+CONE_BASE_RADIUS_M = 0.1397        # 5.5"  (11" base diameter)
+CONE_HEIGHT_M      = 0.4318        # 17" tall
+# First pointer center from standing center:
+#   standing_edge + gap + half_pointer_height = 5.5" + 3" + 8.5" = 17"
+# Each subsequent pointer steps by: cone_height + gap = 17" + 3" = 20"
+#
+# Anchor radius: the CLOSEST pointer to a standing cone must be within this
+# distance for the chain to be snapped at all.  Subsequent chain members can
+# be anywhere — they follow the anchor's direction.
+POINTER_SNAP_ANCHOR_RADIUS_M = 5.0
+
 
 # ---------------------------------------------------------------------------
 # Coordinate transform
@@ -376,6 +391,120 @@ def assign_pointer_facing(pointers, standing):
 
 
 # ---------------------------------------------------------------------------
+# Pointer snapping
+# ---------------------------------------------------------------------------
+
+def snap_pointers_to_standing(pointers, standing,
+                               gap_m=POINTER_SNAP_GAP_M,
+                               anchor_radius_m=POINTER_SNAP_ANCHOR_RADIUS_M,
+                               timing_cones=None):
+    """Reposition pointer chains to physically correct positions from their standing cone.
+
+    For each standing cone:
+      1. Collect ALL pointers assigned to it (via nearest_standing_idx).
+      2. The CLOSEST pointer is the chain anchor — if it exceeds anchor_radius_m,
+         the chain is skipped (likely a stray detection with no real nearby pointer).
+      3. The anchor's direction toward the standing cone defines the chain axis.
+         Remaining chain members follow this axis regardless of how far they are
+         from the standing cone in the original image.
+      4. Pointer centers are placed at:
+           chain 0: base_radius + gap + cone_height/2  (tip is gap past standing edge)
+           chain 1: chain_0 + cone_height + gap        (tip is gap past prev cone base)
+           chain n: chain_0 + n * (cone_height + gap)
+
+    Updates 'bx', 'by', 'facing_deg' in-place.  Adds 'snapped': True for audit.
+    Returns the number of pointers repositioned.
+    """
+    if not standing or not pointers:
+        return 0
+
+    from collections import defaultdict
+    groups = defaultdict(list)
+
+    for p in pointers:
+        s_idx = p.get("nearest_standing_idx")
+        if s_idx is None:
+            continue
+        s = standing[s_idx]
+        dx = s["bx"] - p["bx"]
+        dy = s["by"] - p["by"]
+        dist = math.sqrt(dx * dx + dy * dy)
+        groups[s_idx].append((p, dist))
+
+    # Distances along the chain from the standing cone center.
+    # first_dist: center of pointer 0 (tip is exactly gap_m past standing base edge)
+    # step_dist:  center-to-center spacing for subsequent pointers
+    first_dist = CONE_BASE_RADIUS_M + gap_m + CONE_HEIGHT_M / 2   # = 17" for standard cones
+    step_dist  = CONE_HEIGHT_M + gap_m                             # = 20" for standard cones
+
+    moved = 0
+    for s_idx, group in groups.items():
+        s = standing[s_idx]
+        sx, sy = s["bx"], s["by"]
+
+        # Sort by distance to standing; the anchor (index 0) must be within radius
+        group.sort(key=lambda t: t[1])
+        anchor_p, anchor_dist = group[0]
+        if anchor_dist > anchor_radius_m:
+            continue  # no pointer close enough to anchor this chain
+
+        # Chain axis: direction from the ANCHOR pointer toward the standing cone.
+        # Using the anchor (not the mean) keeps the axis stable even when distant
+        # chain members were detected at inaccurate image positions.
+        adx = sx - anchor_p["bx"]
+        ady = sy - anchor_p["by"]
+        d = math.sqrt(adx * adx + ady * ady)
+        if d < 1e-6:
+            continue
+        ux, uy = adx / d, ady / d   # unit vector: pointer → standing
+        facing = round(math.degrees(math.atan2(uy, ux)), 1)
+
+        for chain_n, (p, _) in enumerate(group):
+            d_from_standing = first_dist + chain_n * step_dist
+            # Subtract ux/uy (toward standing) to move AWAY from standing
+            p["bx"] = round(sx - ux * d_from_standing, 3)
+            p["by"] = round(sy - uy * d_from_standing, 3)
+            p["facing_deg"] = facing
+            p["snapped"] = True
+            moved += 1
+
+    # Second pass: snap any still-unsnapped pointers to nearby timing cones.
+    # This handles pointers adjacent to green/red gate cones, which are not in
+    # the standing (orange) cone list and therefore missed by the first pass.
+    if timing_cones:
+        for p in pointers:
+            if p.get("snapped"):
+                continue
+            best_dist = float("inf")
+            best_tc   = None
+            for tc in timing_cones:
+                dx = tc["bx"] - p["bx"]
+                dy = tc["by"] - p["by"]
+                d  = math.sqrt(dx * dx + dy * dy)
+                if d < best_dist:
+                    best_dist = d
+                    best_tc   = tc
+            if best_tc is None or best_dist > anchor_radius_m:
+                continue
+            adx = best_tc["bx"] - p["bx"]
+            ady = best_tc["by"] - p["by"]
+            d   = math.sqrt(adx * adx + ady * ady)
+            if d < 1e-6:
+                continue
+            ux, uy  = adx / d, ady / d
+            facing  = round(math.degrees(math.atan2(uy, ux)), 1)
+            d_place = CONE_BASE_RADIUS_M + gap_m + CONE_HEIGHT_M / 2
+            p["bx"] = round(best_tc["bx"] - ux * d_place, 3)
+            p["by"] = round(best_tc["by"] - uy * d_place, 3)
+            p["facing_deg"] = facing
+            p["snapped"]    = True
+            p["snapped_to_timing"] = True
+            moved += 1
+
+    return moved
+
+
+# ---------------------------------------------------------------------------
 # JSON helper
 # ---------------------------------------------------------------------------
 
@@ -396,7 +525,7 @@ def native(obj):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def run(image_path, gcp, out_path, preview_path=None):
+def run(image_path, gcp, out_path, preview_path=None, snap_pointers=True, snap_radius_m=POINTER_SNAP_ANCHOR_RADIUS_M):
     # --- Load & downsample ---
     print(f"Loading {image_path} ...", file=sys.stderr)
     img = Image.open(image_path).convert("RGBA")
@@ -444,6 +573,18 @@ def run(image_path, gcp, out_path, preview_path=None):
     red_merged     = process(red_mask,     "Red    (t-end)   ", merge_r=5)
     blue_merged    = process(blue_mask,    "Blue   (GCP)     ", merge_r=10)
 
+    # --- Choose pointer source ---
+    # Prefer magenta (magenta-pointer image variant).  Fall back to orange for
+    # images where pointer cones are drawn orange instead of magenta.  The
+    # caller asserts that only one color will yield detections for a given image.
+    if len(magenta_merged) > 0:
+        pointer_blobs  = magenta_merged
+        pointer_source = "magenta"
+    else:
+        pointer_blobs  = orange_merged
+        pointer_source = "orange"
+    print(f"  Pointer source: {pointer_source} ({len(pointer_blobs)} cones)", file=sys.stderr)
+
     # --- Convert to Blender coords ---
     def to_bl_list(blobs, cone_type):
         out = []
@@ -457,14 +598,27 @@ def run(image_path, gcp, out_path, preview_path=None):
             })
         return out
 
-    standing = to_bl_list(orange_merged,  "standing")
-    pointers = to_bl_list(magenta_merged, "pointer")
+    standing = to_bl_list(orange_merged, "standing")
+    pointers = to_bl_list(pointer_blobs, "pointer")
     greens   = to_bl_list(green_merged,   "timing_start")
     reds     = to_bl_list(red_merged,     "timing_end")
     blues    = to_bl_list(blue_merged,    "gcp")
 
     # --- Pointer orientation ---
     assign_pointer_facing(pointers, standing)
+
+    # --- Snap pointers to exact 3" increments from their standing cone ---
+    if snap_pointers:
+        timing = greens + reds
+        n_snapped = snap_pointers_to_standing(
+            pointers, standing,
+            anchor_radius_m=snap_radius_m,
+            timing_cones=timing if timing else None,
+        )
+        print(f"  Snapped {n_snapped}/{len(pointers)} pointers to 3\" increments "
+              f"(radius={snap_radius_m}m)", file=sys.stderr)
+    else:
+        print(f"  Pointer snap disabled (--no-snap-pointers)", file=sys.stderr)
 
     # --- Bounding box ---
     all_cones = standing + pointers
@@ -478,7 +632,8 @@ def run(image_path, gcp, out_path, preview_path=None):
         }
 
     result = {
-        "transform": transform,
+        "transform":      transform,
+        "pointer_source": pointer_source,
         "n_standing": len(standing),
         "n_pointer":  len(pointers),
         "n_green":    len(greens),
@@ -512,7 +667,7 @@ def run(image_path, gcp, out_path, preview_path=None):
                  b["cx"] + r_stand, b["cy"] + r_stand],
                 outline=(180, 30, 30), width=2)
 
-        for b, c in zip(magenta_merged, pointers):
+        for b, c in zip(pointer_blobs, pointers):
             was_split = b.get("split_from", 1) > 1
             # Split blobs: cyan outline so they stand out for review
             outline_color = (0, 200, 200) if was_split else (220, 0, 220)
@@ -569,6 +724,14 @@ def parse_args():
                    metavar=("X", "Y"), help="Third GCP pixel coords (enables affine transform)")
     p.add_argument("--gcp3-blender",  nargs=2, type=float, default=None,
                    metavar=("BX", "BY"), help="Third GCP Blender world coords")
+    p.add_argument("--no-snap-pointers", action="store_true", default=False,
+                   help="Disable snapping pointer cones to physically correct positions")
+    p.add_argument("--snap-radius", type=float, default=POINTER_SNAP_ANCHOR_RADIUS_M,
+                   metavar="M",
+                   help=f"Max distance (m) from standing cone to its ANCHOR pointer "
+                        f"(closest in chain) for snapping to apply. Remaining chain "
+                        f"members are snapped regardless of distance. "
+                        f"(default: {POINTER_SNAP_ANCHOR_RADIUS_M})")
     return p.parse_args()
 
 
@@ -589,4 +752,6 @@ if __name__ == "__main__":
     if args.gcp3_blender:
         gcp["third_blender"] = tuple(args.gcp3_blender)
 
-    run(args.image, gcp, args.out, preview_path=args.preview)
+    run(args.image, gcp, args.out, preview_path=args.preview,
+        snap_pointers=not args.no_snap_pointers,
+        snap_radius_m=args.snap_radius)

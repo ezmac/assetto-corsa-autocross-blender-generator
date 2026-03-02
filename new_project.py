@@ -19,8 +19,9 @@ import os
 import shutil
 import re
 
-TEMPLATE_DIR  = r"C:\Users\tad\clawdmaps\templates\seneca_runway"
-GENERATED_DIR = r"C:\Users\tad\clawdmaps\generated"
+_HERE         = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_DIR  = os.path.join(_HERE, 'templates', 'seneca_runway')
+GENERATED_DIR = os.path.join(_HERE, 'generated')
 TEMPLATE_BLEND = "seneca_runway.blend"
 
 def main():
@@ -44,12 +45,22 @@ def main():
     src_blend  = os.path.join(dest_dir, TEMPLATE_BLEND)
     dest_blend = os.path.join(dest_dir, f"{track_name}.blend")
     os.rename(src_blend, dest_blend)
-    print(f"Renamed blend: {TEMPLATE_BLEND} → {track_name}.blend")
+    print(f"Renamed blend: {TEMPLATE_BLEND} -> {track_name}.blend")
 
     # Also remove the .blend1 backup if present
     blend1 = os.path.join(dest_dir, TEMPLATE_BLEND.replace(".blend", ".blend1"))
     if os.path.exists(blend1):
         os.remove(blend1)
+
+    # ── Rename .kn5 file(s) ───────────────────────────────────────────────────
+    template_stem = os.path.splitext(TEMPLATE_BLEND)[0]  # "seneca_runway"
+    for root, _dirs, files in os.walk(dest_dir):
+        for f in files:
+            if f == f"{template_stem}.kn5":
+                old_path = os.path.join(root, f)
+                new_path = os.path.join(root, f"{track_name}.kn5")
+                os.rename(old_path, new_path)
+                print(f"Renamed KN5: {os.path.relpath(old_path, dest_dir)} -> {track_name}.kn5")
 
     # ── Update ui/ui_track.json ───────────────────────────────────────────────
     json_path    = os.path.join(dest_dir, "ui", "ui_track.json")
