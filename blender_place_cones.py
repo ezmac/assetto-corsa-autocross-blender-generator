@@ -5,7 +5,7 @@ Invoked by build_track.py via:
     blender --background <file.blend> --python blender_place_cones.py -- --json <path> [--flat] [--fbx <path>]
 
 Can also be run interactively from the Blender Scripting tab:
-    exec(open(r"<path-to-clawdmaps>\blender_place_cones.py").read())
+    exec(open(r"<path-to-assetto-corsa-autocross-blender-generator>\blender_place_cones.py").read())
     (set JSON_PATH / FLAT / FBX_PATH below before running interactively)
 """
 

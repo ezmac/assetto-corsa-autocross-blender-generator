@@ -147,7 +147,7 @@ def setup_project(name, template_name):
     os.rename(blend_src, blend_dst)
     print(f"Blend:        {os.path.relpath(blend_dst, dest_dir)}")
 
-    # ── Rename .kn5 file(s) matching the template name ────────────────────────
+    # ── Rename .kn5 and .fbx file(s) matching the template name ──────────────
     for root, _dirs, files in os.walk(dest_dir):
         for f in files:
             if f == f"{ac_src}.kn5":
@@ -155,6 +155,12 @@ def setup_project(name, template_name):
                 new_path = os.path.join(root, f"{name}.kn5")
                 os.rename(old_path, new_path)
                 print(f"KN5:          {os.path.relpath(old_path, dest_dir)} -> {name}.kn5")
+            elif f.startswith(ac_src) and f.lower().endswith('.fbx'):
+                suffix   = f[len(ac_src):]               # e.g. ".fbx" or "_TREES.fbx"
+                old_path = os.path.join(root, f)
+                new_path = os.path.join(root, f"{name}{suffix}")
+                os.rename(old_path, new_path)
+                print(f"FBX:          {os.path.relpath(old_path, dest_dir)} -> {name}{suffix}")
 
     return dest_dir, blend_dst
 

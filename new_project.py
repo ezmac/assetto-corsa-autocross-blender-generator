@@ -52,7 +52,7 @@ def main():
     if os.path.exists(blend1):
         os.remove(blend1)
 
-    # ── Rename .kn5 file(s) ───────────────────────────────────────────────────
+    # ── Rename .kn5 and .fbx file(s) matching the template name ──────────────
     template_stem = os.path.splitext(TEMPLATE_BLEND)[0]  # "seneca_runway"
     for root, _dirs, files in os.walk(dest_dir):
         for f in files:
@@ -61,6 +61,12 @@ def main():
                 new_path = os.path.join(root, f"{track_name}.kn5")
                 os.rename(old_path, new_path)
                 print(f"Renamed KN5: {os.path.relpath(old_path, dest_dir)} -> {track_name}.kn5")
+            elif f.startswith(template_stem) and f.lower().endswith('.fbx'):
+                suffix   = f[len(template_stem):]        # e.g. ".fbx" or "_TREES.fbx"
+                old_path = os.path.join(root, f)
+                new_path = os.path.join(root, f"{track_name}{suffix}")
+                os.rename(old_path, new_path)
+                print(f"Renamed FBX: {os.path.relpath(old_path, dest_dir)} -> {track_name}{suffix}")
 
     # ── Update ui/ui_track.json ───────────────────────────────────────────────
     json_path    = os.path.join(dest_dir, "ui", "ui_track.json")
