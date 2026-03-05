@@ -30,6 +30,7 @@ Examples:
 
 import sys
 import os
+import platform
 import argparse
 import shutil
 import re
@@ -55,16 +56,39 @@ FLAT_DEFAULTS = {
 
 
 def find_blender():
-    """Search common Windows install locations for blender.exe."""
-    patterns = [
-        r'C:\Program Files\Blender Foundation\Blender*\blender.exe',
-        r'C:\Program Files\Blender Foundation\blender.exe',
-        r'C:\Users\*\AppData\Roaming\Blender Foundation\Blender\*\blender.exe',
-    ]
+    """Search for the Blender executable across platforms."""
+    # Check PATH first — works on all platforms when Blender is installed normally
+    blender = shutil.which('blender')
+    if blender:
+        return blender
+
+    system = platform.system()
+    if system == 'Windows':
+        patterns = [
+            r'C:\Program Files\Blender Foundation\Blender*\blender.exe',
+            r'C:\Program Files\Blender Foundation\blender.exe',
+            r'C:\Users\*\AppData\Roaming\Blender Foundation\Blender\*\blender.exe',
+        ]
+    elif system == 'Darwin':
+        patterns = [
+            '/Applications/Blender.app/Contents/MacOS/Blender',
+            '/Applications/Blender*.app/Contents/MacOS/Blender',
+            os.path.expanduser('~/Applications/Blender.app/Contents/MacOS/Blender'),
+            os.path.expanduser('~/Applications/Blender*.app/Contents/MacOS/Blender'),
+        ]
+    else:  # Linux
+        patterns = [
+            '/snap/bin/blender',
+            os.path.expanduser('~/snap/blender/current/usr/bin/blender'),
+            '/var/lib/flatpak/exports/bin/org.blender.Blender',
+            os.path.expanduser('~/.local/share/flatpak/exports/bin/org.blender.Blender'),
+            '/usr/local/bin/blender',
+            '/usr/bin/blender',
+        ]
+
     for pattern in patterns:
         matches = glob.glob(pattern)
         if matches:
-            # Prefer the highest version number
             return sorted(matches)[-1]
     return None
 
@@ -261,7 +285,7 @@ def main():
                    help=f'Template name from templates/ folder (default: {DEFAULT_TEMPLATE})')
     p.add_argument('--list-templates', action='store_true',  # handled pre-parse above
                    help='List available templates and exit')
-    p.add_argument('--blender',   default=None,  help='Path to blender.exe')
+    p.add_argument('--blender',   default=None,  help='Path to Blender executable')
     p.add_argument('--flat',      action='store_true',  default=None,
                    help='Force flat surface mode')
     p.add_argument('--no-flat',   action='store_true',
@@ -299,7 +323,7 @@ def main():
     # Find Blender
     blender_exe = args.blender or find_blender()
     if not blender_exe or not os.path.isfile(blender_exe):
-        sys.exit("ERROR: blender.exe not found. Use --blender <path> to specify it.")
+        sys.exit("ERROR: Blender not found. Use --blender <path> to specify it.")
     print(f"Blender: {blender_exe}")
 
     dest_dir = os.path.join(GENERATED_DIR, args.name)
