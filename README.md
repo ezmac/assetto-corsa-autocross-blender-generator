@@ -2,11 +2,12 @@
 Convert an overhead autocross map image or json export into a 1:1 scale Assetto Corsa track.
 
 
-## Alpha.  Only tested running in windows on power shell :vomit: Json format is a bit jank.  Image recognition is difficult and format specific.  
+## Alpha.  
+Only tested running in windows on power shell :vomit: Json format is a bit jank.  Image recognition is difficult and format specific.  
+
 Should work with the output of https://ezmac.github.io/ax-mapper
 
-Json schema to be reworked soon.
-Project to be renamed soon.  It no longer _needs_ ai to run properly.
+Json may be reworked soon.
 
 Needs testing on linux but I've had issues running kseditor on linux.
 
@@ -107,7 +108,6 @@ python build_track.py --list-templates
 2. **File → Export → FBX**, scale setting = **FBX All**
    (or pass `--fbx` to `build_track.py` to do this automatically)
 3. Open the FBX in **ksEditor**
-4. For each material, set Shader: `ksPerPixel`, assign diffuse texture to `txDiffuse`
 5. Export KN5 from ksEditor
 
 ---
