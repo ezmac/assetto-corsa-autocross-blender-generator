@@ -368,7 +368,7 @@ def main():
     # ── Step 3: Place cones via Blender ──────────────────────────────────────
     fbx_path = None
     if args.fbx:
-        fbx_path = os.path.join(dest_dir, f'{args.name}.fbx')
+        fbx_path = os.path.join(dest_dir, 'blender', f'{args.name}.fbx')
 
     run_blender(blender_exe, blend_path, json_path, flat, fbx_path)
 
