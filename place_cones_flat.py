@@ -2,7 +2,7 @@
 place_cones_flat.py — Place cones in a flat (no-elevation) Blender scene.
 
 Run from Blender Scripting tab:
-    exec(open(r"<path-to-assetto-corsa-autocross-blender-generator>\\place_cones_flat.py").read())
+    exec(open("/path/to/assetto-corsa-autocross-blender-generator/place_cones_flat.py").read())
 
 Or configure JSON_PATH and BLEND_PATH at the top before running.
 

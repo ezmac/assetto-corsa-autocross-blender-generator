@@ -528,10 +528,12 @@ def native(obj):
 def run(image_path, gcp, out_path, preview_path=None, snap_pointers=True, snap_radius_m=POINTER_SNAP_ANCHOR_RADIUS_M):
     # --- Load & downsample ---
     print(f"Loading {image_path} ...", file=sys.stderr)
-    img = Image.open(image_path).convert("RGBA")
+    img = Image.open(image_path)
     W, H = img.size
     sf = W / WORK_WIDTH
     img_small = img.resize((WORK_WIDTH, int(H / sf)), Image.LANCZOS)
+    del img
+    img_small = img_small.convert("RGBA")
     print(f"  Original: {W}×{H}  Working: {img_small.size}  sf={sf:.2f}", file=sys.stderr)
 
     transform = build_transform(gcp)
