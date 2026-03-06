@@ -19,6 +19,15 @@ Needs testing on linux but I've had issues running kseditor on linux.
 
 ---
 
+## Templates:
+See template_requirements.md for detailed info.  To get started quickly, download the assets from this video's description. 
+https://mega.nz/file/084lnAxb#TKQA9plb322QE7iX4t_HheZRzxGbp5H9-ozUkBv9IjU
+goes in templates/.  Because uniformity, rename all files and folders to be rem_gymkhana instead of ac_gymkhana.
+File provided by Route Eight Media in this video's description: https://www.youtube.com/watch?v=wjnjIFCT2wQ
+
+I'd like to fix this so that I'm not sending people at mega.nz, but haven't found a good way yet.  Comment on issues if you know of one.
+
+
 ## Build from an image
 
 ```
