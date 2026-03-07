@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "cone_data_schema.json",
+  "$id": "cone_data.schema.json",
   "title": "ConeData",
   "description": "Output of detect_cones.py — autocross cone positions in Blender world-space coordinates.",
   "type": "object",
   "required": [
     "transform", "pointer_source",
-    "n_standing", "n_pointer", "n_green", "n_red", "n_blue",
-    "bounds", "standing", "pointers", "greens", "reds", "blues"
+    "n_standing", "n_pointer", "n_timing_start", "n_timing_end", "n_gcp",
+    "bounds", "standing", "pointers", "timing_start", "timing_end", "gcp"
   ],
   "additionalProperties": false,
   "properties": {
@@ -55,9 +55,9 @@
 
     "n_standing": { "type": "integer", "minimum": 0, "description": "Number of standing (orange) cones detected." },
     "n_pointer":  { "type": "integer", "minimum": 0, "description": "Number of pointer (lying-flat) cones detected." },
-    "n_green":    { "type": "integer", "minimum": 0, "description": "Number of timing-start (green) cones detected." },
-    "n_red":      { "type": "integer", "minimum": 0, "description": "Number of timing-end (red) cones detected." },
-    "n_blue":     { "type": "integer", "minimum": 0, "description": "Number of GCP reference (blue) dots detected." },
+    "n_timing_start": { "type": "integer", "minimum": 0, "description": "Number of timing-start (green) cones detected." },
+    "n_timing_end":   { "type": "integer", "minimum": 0, "description": "Number of timing-end (red) cones detected." },
+    "n_gcp":          { "type": "integer", "minimum": 0, "description": "Number of GCP reference (blue) dots detected." },
 
     "bounds": {
       "description": "Axis-aligned bounding box of all standing + pointer cone positions (metres).",
@@ -84,19 +84,19 @@
       "items": { "$ref": "#/$defs/pointer_cone" }
     },
 
-    "greens": {
+    "timing_start": {
       "description": "Timing start gate cone positions.",
       "type": "array",
       "items": { "$ref": "#/$defs/base_cone" }
     },
 
-    "reds": {
+    "timing_end": {
       "description": "Timing end gate cone positions.",
       "type": "array",
       "items": { "$ref": "#/$defs/base_cone" }
     },
 
-    "blues": {
+    "gcp": {
       "description": "GCP (ground control point) reference dot positions.",
       "type": "array",
       "items": { "$ref": "#/$defs/base_cone" }

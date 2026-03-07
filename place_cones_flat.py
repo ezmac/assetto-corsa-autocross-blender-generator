@@ -179,7 +179,7 @@ for obj in all_placed:
 print(f"Baked rotation into {len(all_placed)} cone meshes")
 
 # ── Spawn markers at start gate ────────────────────────────────────────────────
-greens = data.get('greens', [])
+greens = data.get('timing_start', [])
 if greens:
     gx = sum(g['bx'] for g in greens) / len(greens)
     gy = sum(g['by'] for g in greens) / len(greens)

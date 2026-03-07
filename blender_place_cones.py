@@ -50,8 +50,8 @@ with open(JSON_PATH) as f:
 
 standing = data.get('standing', [])
 pointers = data.get('pointers', [])
-greens   = data.get('greens',   [])
-reds     = data.get('reds',     [])
+greens   = data.get('timing_start', [])
+reds     = data.get('timing_end',   [])
 
 # Compute bounds if missing (old detect_cones.py format)
 if 'bounds' not in data:

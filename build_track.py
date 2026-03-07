@@ -200,7 +200,7 @@ def update_track_info(dest_dir, name, json_path):
     if 'bounds' in data:
         b = data['bounds']
     else:
-        all_pts = standing + pointers + data.get('greens', []) + data.get('reds', [])
+        all_pts = standing + pointers + data.get('timing_start', []) + data.get('timing_end', [])
         b = {
             'xmin': min(c['bx'] for c in all_pts),
             'xmax': max(c['bx'] for c in all_pts),
