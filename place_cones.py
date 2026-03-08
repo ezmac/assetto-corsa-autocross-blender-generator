@@ -86,8 +86,8 @@ with open(JSON_PATH) as f:
 
 standing = data["standing"]   # list of {bx, by}
 pointers = data["pointers"]   # list of {bx, by, facing_deg}
-greens   = data.get("greens", [])   # timing start gate cones (2 expected)
-reds     = data.get("reds",   [])   # timing end gate cones   (2 expected)
+greens   = data.get("timing_start", [])   # timing start gate cones (2 expected)
+reds     = data.get("timing_end",   [])   # timing end gate cones   (2 expected)
 
 print(f"Loaded: {len(standing)} standing, {len(pointers)} pointer cones")
 
@@ -105,7 +105,7 @@ print(f"Loaded: {len(standing)} standing, {len(pointers)} pointer cones")
 # space (transform was applied in detect_cones.py), so blues will be absent or
 # the scene GCPs won't form a solvable system — the block is skipped.
 
-blues = data.get("blues", [])
+blues = data.get("gcp", [])
 if len(blues) == 3:
     scene_pts = []
     for name in GCP_NAMES:
