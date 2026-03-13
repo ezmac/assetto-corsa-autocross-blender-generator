@@ -48,9 +48,9 @@
     },
 
     "pointer_source": {
-      "description": "Which colour channel was used for pointer cone detection.",
+      "description": "Which colour channel (raster) or method (vector PDF) was used for pointer cone detection.",
       "type": "string",
-      "enum": ["magenta", "orange"]
+      "enum": ["magenta", "orange", "pdf"]
     },
 
     "n_standing": { "type": "integer", "minimum": 0, "description": "Number of standing (orange) cones detected." },

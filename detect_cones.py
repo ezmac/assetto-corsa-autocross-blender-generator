@@ -83,7 +83,8 @@ CONE_HEIGHT_M      = 0.4318        # 17" tall
 # Anchor radius: the CLOSEST pointer to a standing cone must be within this
 # distance for the chain to be snapped at all.  Subsequent chain members can
 # be anywhere — they follow the anchor's direction.
-POINTER_SNAP_ANCHOR_RADIUS_M = 5.0
+POINTER_SNAP_ANCHOR_RADIUS_M = 3.0   # closest pointer to its standing cone (~10 ft)
+POINTER_CHAIN_RADIUS_M       = 2.0   # pointer-to-pointer chain link distance (~6.5 ft)
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +398,7 @@ def assign_pointer_facing(pointers, standing):
 def snap_pointers_to_standing(pointers, standing,
                                gap_m=POINTER_SNAP_GAP_M,
                                anchor_radius_m=POINTER_SNAP_ANCHOR_RADIUS_M,
+                               chain_radius_m=POINTER_CHAIN_RADIUS_M,
                                timing_cones=None):
     """Reposition pointer chains to physically correct positions from their standing cone.
 
@@ -500,6 +502,42 @@ def snap_pointers_to_standing(pointers, standing,
             p["snapped"]    = True
             p["snapped_to_timing"] = True
             moved += 1
+
+    # Chain pass: extend chains through unsnapped pointers that are close to
+    # an already-snapped pointer.  Iterate until stable (handles multi-hop chains).
+    if chain_radius_m and chain_radius_m > 0:
+        changed = True
+        while changed:
+            changed = False
+            for p in pointers:
+                if p.get("snapped"):
+                    continue
+                # Find the nearest snapped pointer within chain_radius_m
+                best_dist = float("inf")
+                best_snap = None
+                for q in pointers:
+                    if not q.get("snapped"):
+                        continue
+                    dx = q["bx"] - p["bx"]
+                    dy = q["by"] - p["by"]
+                    d  = math.sqrt(dx * dx + dy * dy)
+                    if d < best_dist:
+                        best_dist = d
+                        best_snap = q
+                if best_snap is None or best_dist > chain_radius_m:
+                    continue
+                # Continue the chain: place this pointer one step further
+                # in the same direction as the snapped pointer (away from its anchor).
+                facing_rad = math.radians(best_snap["facing_deg"])
+                ux = math.cos(facing_rad)
+                uy = math.sin(facing_rad)
+                # Move one step_dist away from the snapped pointer (away from standing)
+                p["bx"] = round(best_snap["bx"] - ux * step_dist, 3)
+                p["by"] = round(best_snap["by"] - uy * step_dist, 3)
+                p["facing_deg"] = best_snap["facing_deg"]
+                p["snapped"] = True
+                moved += 1
+                changed = True
 
     return moved
 

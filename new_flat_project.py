@@ -40,7 +40,7 @@ SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
 GENERATED_DIR = os.path.join(SCRIPT_DIR, 'generated')
 BLENDER_SCRIPT    = os.path.join(SCRIPT_DIR, 'create_flat_template.py')
 DEFAULT_CONE_BLEND = os.path.join(SCRIPT_DIR, 'templates', 'rem_gymkhana',
-                                  'Blender', 'Asset', 'Cone01.blend')
+                                  'blender', 'asset', 'Cone01.blend')
 
 
 # ── Blender discovery ─────────────────────────────────────────────────────────
