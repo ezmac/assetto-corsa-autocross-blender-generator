@@ -1,21 +1,26 @@
 """
-build_track.py — Build an Assetto Corsa autocross track from an image or JSON file.
+build_track.py — Build an Assetto Corsa autocross track from an image, PDF, or JSON file.
 
 Usage:
-    python build_track.py --name <name> --json <path.json> [options]
-    python build_track.py --name <name> --image <path.png>  [options]
+    python build_track.py --name <name> --json  <path.json>           [options]
+    python build_track.py --name <name> --image <path.png>            [options]
+    python build_track.py --name <name> --pdf   <path.pdf> --page N   [options]
 
 Options:
     --name NAME         Track name — used for folder, blend file, and AC data folder (required)
-    --json PATH         Pre-generated cone JSON (skip image detection)
+    --json PATH         Pre-generated cone JSON (skip detection)
     --image PATH        Source map image (runs detect_cones.py first)
+    --pdf PATH          Course map PDF (runs detect_cones_pdf.py; also extracts course outline)
+    --page N            1-indexed page number within the PDF (default: 1)
     --template NAME     Template to copy from templates/ (default: rem_gymkhana)
     --blender PATH      Path to blender.exe (auto-detected if omitted)
     --flat / --no-flat  Override surface mode (default depends on template)
     --fbx               Export FBX at the end (placed next to the blend file)
-    --preview PATH      Save annotated detection image (image mode only)
-    --out-json PATH     Where to save detected JSON (image mode only,
-                        default: generated/<name>/<name>_cones.json)
+    --preview PATH      Save annotated detection image (image/pdf mode)
+    --map PATH          Save clean map PNG at 72 DPI (pdf mode only)
+    --out-json PATH     Where to save detected JSON (default: generated/<name>/debug/<name>.json)
+    --no-snap-pointers  Disable pointer snapping (pdf mode only)
+    --snap-radius M     Max snap distance in metres (pdf mode only)
 
 GCP overrides (image mode only — passed through to detect_cones.py):
     --gcp-left-img   X Y    --gcp-left-blender   BX BY
@@ -25,6 +30,7 @@ GCP overrides (image mode only — passed through to detect_cones.py):
 Examples:
     python build_track.py --name mytrack --json mytrack_cones.json
     python build_track.py --name mytrack --image map.png --template rem_gymkhana --fbx
+    python build_track.py --name 2018_west --pdf "Nationals Courses.pdf" --page 2 --fbx
     python build_track.py --name seneca_v7 --json cone_data_affine.json --template seneca_runway --no-flat
 """
 
@@ -39,12 +45,13 @@ import glob
 import subprocess
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
-TEMPLATES_DIR = os.path.join(SCRIPT_DIR, 'templates')
-GENERATED_DIR = os.path.join(SCRIPT_DIR, 'generated')
-DETECT_SCRIPT = os.path.join(SCRIPT_DIR, 'detect_cones.py')
-PLACE_SCRIPT  = os.path.join(SCRIPT_DIR, 'blender_place_cones.py')
-SYSTEM_PYTHON = sys.executable
+SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
+TEMPLATES_DIR   = os.path.join(SCRIPT_DIR, 'templates')
+GENERATED_DIR   = os.path.join(SCRIPT_DIR, 'generated')
+DETECT_SCRIPT   = os.path.join(SCRIPT_DIR, 'detect_cones.py')
+DETECT_PDF_SCRIPT = os.path.join(SCRIPT_DIR, 'detect_cones_pdf.py')
+PLACE_SCRIPT    = os.path.join(SCRIPT_DIR, 'blender_place_cones.py')
+SYSTEM_PYTHON   = sys.executable
 
 DEFAULT_TEMPLATE = 'rem_gymkhana'
 
@@ -94,7 +101,7 @@ def find_blender():
 
 
 def find_main_blend(blender_dir):
-    """Find the main .blend in the blender folder, ignoring Asset/ subdirs and .blend1 backups."""
+    """Find the main .blend in the blender folder, ignoring asset/ subdirs and .blend1 backups."""
     candidates = []
     for root, dirs, files in os.walk(blender_dir):
         dirs[:] = [d for d in dirs if d.lower() != 'asset']
@@ -241,6 +248,27 @@ def detect_cones(image_path, out_json, extra_args):
     print(f"Cone JSON: {out_json}")
 
 
+def detect_cones_pdf(pdf_path, page, out_json, preview_path, map_path, extra_args):
+    """Run detect_cones_pdf.py on a PDF page to produce cone JSON."""
+    cmd = [
+        SYSTEM_PYTHON, DETECT_PDF_SCRIPT,
+        '--pdf',    pdf_path,
+        '--page',   str(page),
+        '--out',    out_json,
+    ]
+    if preview_path:
+        cmd += ['--preview', preview_path]
+    if map_path:
+        cmd += ['--map', map_path]
+    cmd += extra_args
+    print(f"\n-- detect_cones_pdf.py {'-'*46}")
+    print(' '.join(f'"{a}"' if ' ' in a else a for a in cmd))
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        sys.exit(f"ERROR: detect_cones_pdf.py failed (exit {result.returncode})")
+    print(f"Cone JSON: {out_json}")
+
+
 def run_blender(blender_exe, blend_path, json_path, flat, fbx_path):
     """Invoke Blender headlessly to place cones and export FBX."""
     cmd = [
@@ -281,6 +309,9 @@ def main():
     p.add_argument('--name',      required=True, help='Track name')
     p.add_argument('--json',      default=None,  help='Cone data JSON path')
     p.add_argument('--image',     default=None,  help='Source map image')
+    p.add_argument('--pdf',       default=None,  help='Course map PDF')
+    p.add_argument('--page',      type=int, default=1,
+                   help='1-indexed page number within the PDF (default: 1)')
     p.add_argument('--template',      default=DEFAULT_TEMPLATE,
                    help=f'Template name from templates/ folder (default: {DEFAULT_TEMPLATE})')
     p.add_argument('--list-templates', action='store_true',  # handled pre-parse above
@@ -292,9 +323,17 @@ def main():
                    help='Force BVH raycast mode')
     p.add_argument('--fbx',       action='store_true',
                    help='Export FBX after cone placement')
-    # Image-mode options (passed through to detect_cones.py)
-    p.add_argument('--out-json',    default=None)
-    p.add_argument('--preview',     default=None)
+    p.add_argument('--out-json',  default=None,
+                   help='Where to save detected JSON (default: generated/<name>_cones.json)')
+    p.add_argument('--preview',   default=None,
+                   help='Save annotated detection image (image/pdf mode)')
+    p.add_argument('--map',       default=None,
+                   help='Save clean map PNG at 72 DPI (pdf mode only)')
+    p.add_argument('--no-snap-pointers', action='store_true', default=False,
+                   help='Disable pointer snapping (pdf mode only)')
+    p.add_argument('--snap-radius', type=float, default=None, metavar='M',
+                   help='Max snap distance in metres (pdf mode only)')
+    # GCP overrides (image mode only)
     p.add_argument('--gcp-left-img',      nargs=2, type=float, default=None)
     p.add_argument('--gcp-left-blender',  nargs=2, type=float, default=None)
     p.add_argument('--gcp-right-img',     nargs=2, type=float, default=None)
@@ -304,11 +343,12 @@ def main():
 
     args = p.parse_args()
 
-    # Validate input
-    if not args.json and not args.image:
-        p.error("Provide either --json or --image")
-    if args.json and args.image:
-        p.error("Provide either --json or --image, not both")
+    # Validate input source
+    sources = [s for s in (args.json, args.image, args.pdf) if s]
+    if not sources:
+        p.error("Provide one of --json, --image, or --pdf")
+    if len(sources) > 1:
+        p.error("Provide only one of --json, --image, or --pdf")
 
     template_name = args.template
 
@@ -334,15 +374,26 @@ def main():
     print(f"  Output:   {dest_dir}")
     print(f"{'='*65}\n")
 
-    # ── Step 1: Detect cones from image (if needed) ───────────────────────────
+    # ── Step 1: Copy template and set up project (or reuse existing) ──────────
+    dest_dir  = os.path.join(GENERATED_DIR, args.name)
+    debug_dir = os.path.join(dest_dir, 'debug')
+
+    if args.json and os.path.isdir(dest_dir):
+        # Re-run mode: project already exists, just find the blend file
+        blend_path = find_main_blend(os.path.join(dest_dir, 'blender'))
+        print(f"Reusing existing project: {dest_dir}")
+    else:
+        dest_dir, blend_path = setup_project(args.name, template_name)
+        os.makedirs(debug_dir, exist_ok=True)
+
+    # ── Step 2: Detect cones from image or PDF (if needed) ───────────────────
     json_path = args.json
+    out_json  = args.out_json or os.path.join(debug_dir, f'{args.name}.json')
+
     if args.image:
-        out_json = args.out_json or os.path.join(
-            GENERATED_DIR, args.name + '_cones.json')
-        # Build detect_cones.py passthrough args
         extra = []
-        if args.preview:
-            extra += ['--preview', args.preview]
+        preview = args.preview or os.path.join(debug_dir, f'{args.name}_preview.png')
+        extra += ['--preview', preview]
         for flag, vals in [
             ('--gcp-left-img',      args.gcp_left_img),
             ('--gcp-left-blender',  args.gcp_left_blender),
@@ -353,16 +404,31 @@ def main():
         ]:
             if vals:
                 extra += [flag] + [str(v) for v in vals]
-
         detect_cones(args.image, out_json, extra)
+        json_path = out_json
+
+    elif args.pdf:
+        extra = []
+        if args.no_snap_pointers:
+            extra.append('--no-snap-pointers')
+        if args.snap_radius is not None:
+            extra += ['--snap-radius', str(args.snap_radius)]
+        preview  = args.preview or os.path.join(debug_dir, f'{args.name}_preview.png')
+        map_path = args.map     or os.path.join(debug_dir, f'{args.name}_map.png')
+        detect_cones_pdf(
+            pdf_path=args.pdf,
+            page=args.page,
+            out_json=out_json,
+            preview_path=preview,
+            map_path=map_path,
+            extra_args=extra,
+        )
         json_path = out_json
 
     json_path = os.path.abspath(json_path)
     if not os.path.isfile(json_path):
         sys.exit(f"ERROR: JSON not found: {json_path}")
 
-    # ── Step 2: Copy template and set up project ──────────────────────────────
-    dest_dir, blend_path = setup_project(args.name, template_name)
     update_track_info(dest_dir, args.name, json_path)
 
     # ── Step 3: Place cones via Blender ──────────────────────────────────────
@@ -378,6 +444,10 @@ def main():
     print(f"  Blend: {blend_path}")
     if fbx_path and os.path.isfile(fbx_path):
         print(f"  FBX:   {fbx_path}")
+    if args.image or args.pdf:
+        print(f"  Debug: {debug_dir}/")
+        for f in sorted(os.listdir(debug_dir)):
+            print(f"         {f}")
     print(f"{'='*65}")
 
 
