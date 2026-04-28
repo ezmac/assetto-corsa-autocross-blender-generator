@@ -13,6 +13,9 @@ Options:
     --pdf PATH          Course map PDF (runs detect_cones_pdf.py; also extracts course outline)
     --page N            1-indexed page number within the PDF (default: 1)
     --template NAME     Template to copy from templates/ (default: rem_gymkhana)
+    --no-template       Generate flat map geometry procedurally (no pre-built template needed)
+                        Road dimensions are calculated from the cone JSON bounds automatically.
+    --cone-blend PATH   .blend file with cone asset for --no-template mode
     --blender PATH      Path to blender.exe (auto-detected if omitted)
     --flat / --no-flat  Override surface mode (default depends on template)
     --fbx               Export FBX at the end (placed next to the blend file)
@@ -32,6 +35,7 @@ Examples:
     python build_track.py --name mytrack --image map.png --template rem_gymkhana --fbx
     python build_track.py --name 2018_west --pdf "Nationals Courses.pdf" --page 2 --fbx
     python build_track.py --name seneca_v7 --json cone_data_affine.json --template seneca_runway --no-flat
+    python build_track.py --name my_event --json cones.json --no-template --fbx
 """
 
 import sys
@@ -51,7 +55,11 @@ GENERATED_DIR   = os.path.join(SCRIPT_DIR, 'generated')
 DETECT_SCRIPT   = os.path.join(SCRIPT_DIR, 'detect_cones.py')
 DETECT_PDF_SCRIPT = os.path.join(SCRIPT_DIR, 'detect_cones_pdf.py')
 PLACE_SCRIPT    = os.path.join(SCRIPT_DIR, 'blender_place_cones.py')
+FLAT_TEMPLATE_SCRIPT = os.path.join(SCRIPT_DIR, 'create_flat_template.py')
 SYSTEM_PYTHON   = sys.executable
+
+sys.path.insert(0, SCRIPT_DIR)
+import new_flat_project
 
 DEFAULT_TEMPLATE = 'rem_gymkhana'
 
@@ -269,6 +277,86 @@ def detect_cones_pdf(pdf_path, page, out_json, preview_path, map_path, extra_arg
     print(f"Cone JSON: {out_json}")
 
 
+def get_dims_from_json(json_path, padding=20.0):
+    """Return (width, length) in metres from cone bounds in JSON, with padding on each side."""
+    with open(json_path) as f:
+        data = json.load(f)
+    b = data.get('bounds')
+    if not b:
+        all_pts = (data.get('standing', []) + data.get('pointers', [])
+                   + data.get('timing_start', []) + data.get('timing_end', []))
+        if not all_pts:
+            return 120.0, 80.0
+        b = {
+            'xmin': min(c['bx'] for c in all_pts),
+            'xmax': max(c['bx'] for c in all_pts),
+            'ymin': min(c['by'] for c in all_pts),
+            'ymax': max(c['by'] for c in all_pts),
+        }
+    width  = round((b['xmax'] - b['xmin']) + padding * 2, 1)
+    length = round((b['ymax'] - b['ymin']) + padding * 2, 1)
+    return width, length
+
+
+def _run_detection(args, out_json, debug_dir):
+    """Run cone detection from image or PDF into out_json. Returns out_json."""
+    os.makedirs(debug_dir, exist_ok=True)
+    if args.image:
+        extra = []
+        preview = args.preview or os.path.join(debug_dir, f'{args.name}_preview.png')
+        extra += ['--preview', preview]
+        for flag, vals in [
+            ('--gcp-left-img',      args.gcp_left_img),
+            ('--gcp-left-blender',  args.gcp_left_blender),
+            ('--gcp-right-img',     args.gcp_right_img),
+            ('--gcp-right-blender', args.gcp_right_blender),
+            ('--gcp3-img',          args.gcp3_img),
+            ('--gcp3-blender',      args.gcp3_blender),
+        ]:
+            if vals:
+                extra += [flag] + [str(v) for v in vals]
+        detect_cones(args.image, out_json, extra)
+    elif args.pdf:
+        extra = []
+        if args.no_snap_pointers:
+            extra.append('--no-snap-pointers')
+        if args.snap_radius is not None:
+            extra += ['--snap-radius', str(args.snap_radius)]
+        preview  = args.preview or os.path.join(debug_dir, f'{args.name}_preview.png')
+        map_path = args.map     or os.path.join(debug_dir, f'{args.name}_map.png')
+        detect_cones_pdf(
+            pdf_path=args.pdf,
+            page=args.page,
+            out_json=out_json,
+            preview_path=preview,
+            map_path=map_path,
+            extra_args=extra,
+        )
+    return out_json
+
+
+def run_create_flat_template(blender_exe, name, dest_dir, width, length, cone_blend):
+    """Invoke Blender headlessly to build a flat scene from scratch."""
+    cmd = [
+        blender_exe,
+        '--background',
+        '--python', FLAT_TEMPLATE_SCRIPT,
+        '--',
+        '--name',   name,
+        '--width',  str(width),
+        '--length', str(length),
+        '--output', dest_dir,
+    ]
+    if cone_blend:
+        cmd += ['--cone-blend', cone_blend]
+    print(f"\n-- create_flat_template {'-'*44}")
+    print(' '.join(f'"{a}"' if ' ' in a else a for a in cmd))
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        sys.exit(f"ERROR: create_flat_template.py failed (exit {result.returncode})")
+    return os.path.join(dest_dir, 'blender', f'{name}.blend')
+
+
 def run_blender(blender_exe, blend_path, json_path, flat, fbx_path):
     """Invoke Blender headlessly to place cones and export FBX."""
     cmd = [
@@ -314,6 +402,11 @@ def main():
                    help='1-indexed page number within the PDF (default: 1)')
     p.add_argument('--template',      default=DEFAULT_TEMPLATE,
                    help=f'Template name from templates/ folder (default: {DEFAULT_TEMPLATE})')
+    p.add_argument('--no-template',   action='store_true',
+                   help='Generate flat map geometry procedurally (no pre-built template needed); '
+                        'road dimensions are derived from the cone JSON bounds automatically')
+    p.add_argument('--cone-blend', default=None,
+                   help='Path to .blend with cone asset (--no-template only)')
     p.add_argument('--list-templates', action='store_true',  # handled pre-parse above
                    help='List available templates and exit')
     p.add_argument('--blender',   default=None,  help='Path to Blender executable')
@@ -349,6 +442,8 @@ def main():
         p.error("Provide one of --json, --image, or --pdf")
     if len(sources) > 1:
         p.error("Provide only one of --json, --image, or --pdf")
+    if args.no_template and args.template != DEFAULT_TEMPLATE:
+        p.error("--no-template and --template are mutually exclusive")
 
     template_name = args.template
 
@@ -357,6 +452,8 @@ def main():
         flat = False
     elif args.flat:
         flat = True
+    elif args.no_template:
+        flat = True  # procedurally generated surface is always flat
     else:
         flat = FLAT_DEFAULTS.get(template_name, True)
 
@@ -370,60 +467,45 @@ def main():
 
     print(f"\n{'='*65}")
     print(f"  Track:    {args.name}")
-    print(f"  Template: {template_name}  (flat={flat})")
+    if args.no_template:
+        print(f"  Template: (none — procedural flat, dimensions from JSON)")
+    else:
+        print(f"  Template: {template_name}  (flat={flat})")
     print(f"  Output:   {dest_dir}")
     print(f"{'='*65}\n")
 
-    # ── Step 1: Copy template and set up project (or reuse existing) ──────────
+    # ── Step 1: Set up project ────────────────────────────────────────────────
     dest_dir  = os.path.join(GENERATED_DIR, args.name)
     debug_dir = os.path.join(dest_dir, 'debug')
+    out_json  = args.out_json or os.path.join(debug_dir, f'{args.name}.json')
+    json_path = args.json
 
     if args.json and os.path.isdir(dest_dir):
         # Re-run mode: project already exists, just find the blend file
         blend_path = find_main_blend(os.path.join(dest_dir, 'blender'))
         print(f"Reusing existing project: {dest_dir}")
+    elif args.no_template:
+        # Need JSON bounds before sizing the scene — detect first if image/pdf
+        if not args.json:
+            json_path = _run_detection(args, out_json, debug_dir)
+        width, length = get_dims_from_json(json_path)
+        print(f"  Flat dimensions: {width}m x {length}m (from JSON bounds + 20m padding)")
+        cone_blend = args.cone_blend or (
+            new_flat_project.DEFAULT_CONE_BLEND
+            if os.path.isfile(new_flat_project.DEFAULT_CONE_BLEND) else None
+        )
+        new_flat_project.create_project(args.name, width, length)
+        os.makedirs(debug_dir, exist_ok=True)
+        blend_path = run_create_flat_template(
+            blender_exe, args.name, dest_dir, width, length, cone_blend
+        )
     else:
         dest_dir, blend_path = setup_project(args.name, template_name)
         os.makedirs(debug_dir, exist_ok=True)
 
-    # ── Step 2: Detect cones from image or PDF (if needed) ───────────────────
-    json_path = args.json
-    out_json  = args.out_json or os.path.join(debug_dir, f'{args.name}.json')
-
-    if args.image:
-        extra = []
-        preview = args.preview or os.path.join(debug_dir, f'{args.name}_preview.png')
-        extra += ['--preview', preview]
-        for flag, vals in [
-            ('--gcp-left-img',      args.gcp_left_img),
-            ('--gcp-left-blender',  args.gcp_left_blender),
-            ('--gcp-right-img',     args.gcp_right_img),
-            ('--gcp-right-blender', args.gcp_right_blender),
-            ('--gcp3-img',          args.gcp3_img),
-            ('--gcp3-blender',      args.gcp3_blender),
-        ]:
-            if vals:
-                extra += [flag] + [str(v) for v in vals]
-        detect_cones(args.image, out_json, extra)
-        json_path = out_json
-
-    elif args.pdf:
-        extra = []
-        if args.no_snap_pointers:
-            extra.append('--no-snap-pointers')
-        if args.snap_radius is not None:
-            extra += ['--snap-radius', str(args.snap_radius)]
-        preview  = args.preview or os.path.join(debug_dir, f'{args.name}_preview.png')
-        map_path = args.map     or os.path.join(debug_dir, f'{args.name}_map.png')
-        detect_cones_pdf(
-            pdf_path=args.pdf,
-            page=args.page,
-            out_json=out_json,
-            preview_path=preview,
-            map_path=map_path,
-            extra_args=extra,
-        )
-        json_path = out_json
+    # ── Step 2: Detect cones from image or PDF (if not already done above) ───
+    if not args.no_template and (args.image or args.pdf):
+        json_path = _run_detection(args, out_json, debug_dir)
 
     json_path = os.path.abspath(json_path)
     if not os.path.isfile(json_path):
