@@ -205,8 +205,9 @@ def write_ui_track_json(path, track_name):
 
 # ── Project setup ─────────────────────────────────────────────────────────────
 
-def create_project(name, width, length):
-    dest_dir = os.path.join(GENERATED_DIR, name)
+def create_project(name, width, length, dest_dir=None):
+    if dest_dir is None:
+        dest_dir = os.path.join(GENERATED_DIR, name)
     if os.path.exists(dest_dir):
         print(f"ERROR: Project already exists: {dest_dir}")
         sys.exit(1)

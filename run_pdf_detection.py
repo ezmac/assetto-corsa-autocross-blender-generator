@@ -2,7 +2,7 @@
 run_pdf_detection.py — Batch cone detection over a list of Solo Nationals PDFs.
 
 Reads a JSON jobs file and runs detect_cones_pdf.run() for each entry.
-Outputs JSON (and optional preview PNG) to a configurable directory.
+Outputs files to {out_dir}/solonats_{name}/ subdirectories.
 
 Jobs file format (JSON array):
   [
@@ -16,14 +16,24 @@ Jobs file format (JSON array):
   ]
 
 Fields:
-  pdf         Path to PDF (relative to CWD or absolute).            [required]
-  page        1-indexed page number.                                [required]
-  name        Output base name (no extension). Used for .json/.png. [required]
-  map         Whether to write a clean map PNG at 72 DPI (1px=1pt). [default: false]
-  preview     Whether to write an annotated PNG.                    [default: false]
-  snap        Whether to snap pointers to 3-inch increments.        [default: true]
-  snap_radius Max anchor-pointer distance for snapping (metres).    [default: 5.0]
-  skip        Set true to skip this entry without removing it.      [default: false]
+  pdf                Path to PDF (relative to CWD or absolute).            [required]
+  page               1-indexed page number.                                [required]
+  name               Output base name (no extension).                      [required]
+  map                Whether to write a clean map PNG at 72 DPI (1px=1pt). [default: false]
+  preview            Whether to write an annotated PNG.                    [default: false]
+  snap               Whether to snap pointers to 3-inch increments.        [default: false]
+  snap_radius        Max anchor-pointer distance for snapping (metres).    [default: 5.0]
+  skip               Set true to skip this entry without removing it.      [default: false]
+  timing_start_cones List of cone numbers marking the start timing gates.  [optional]
+  timing_end_cones   List of cone numbers marking the finish timing gates.  [optional]
+
+Output layout:
+  {out_dir}/solonats_{name}/
+    {name}.json
+    {name}_map.png      (if map: true)
+    {name}_preview.png  (if preview: true)
+    {name}_course.png   (if course: true)
+    {name}_chalk.png    (always)
 
 Usage:
   python run_pdf_detection.py --jobs jobs.json [--out-dir generated/solonats]
@@ -31,12 +41,15 @@ Usage:
 
 import sys
 import json
+import shutil
 import argparse
 import traceback
 from pathlib import Path
 
 from detect_cones_pdf import run as detect_run
 from detect_cones import POINTER_SNAP_ANCHOR_RADIUS_M
+
+CHALK_WIDTH_IN = 5.0   # physical chalk line width written to every output
 
 
 def process_job(job, out_dir: Path):
@@ -46,13 +59,20 @@ def process_job(job, out_dir: Path):
     do_map     = bool(job.get("map",     False))
     do_preview = bool(job.get("preview", False))
     do_course  = bool(job.get("course",  False))
-    snap       = bool(job.get("snap", True))
+    snap       = bool(job.get("snap", False))
     snap_r     = float(job.get("snap_radius", POINTER_SNAP_ANCHOR_RADIUS_M))
+    timing_start_cones = job.get("timing_start_cones")
+    timing_end_cones   = job.get("timing_end_cones")
+    invert_gates       = bool(job.get("invert_gates", False))
 
-    out_json    = out_dir / f"{name}.json"
-    map_png     = (out_dir / f"{name}_map.png")     if do_map     else None
-    preview_png = (out_dir / f"{name}_preview.png") if do_preview else None
-    course_png  = (out_dir / f"{name}_course.png")  if do_course  else None
+    job_dir = out_dir / f"solonats_{name}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    out_json    = job_dir / f"{name}.json"
+    chalk_png   = job_dir / f"{name}_chalk.png"
+    map_png     = (job_dir / f"{name}_map.png")     if do_map     else None
+    preview_png = (job_dir / f"{name}_preview.png") if do_preview else None
+    course_png  = (job_dir / f"{name}_course.png")  if do_course  else None
 
     print(f"\n{'='*60}", flush=True)
     print(f"  {name}  (page {page})", flush=True)
@@ -69,11 +89,35 @@ def process_job(job, out_dir: Path):
         snap_pointers=snap,
         snap_radius_m=snap_r,
         course_path=str(course_png) if course_png else None,
+        timing_start_cones=timing_start_cones,
+        timing_end_cones=timing_end_cones,
+        invert_gates=invert_gates,
+        chalk_path=str(chalk_png),
+        chalk_width_in=CHALK_WIDTH_IN,
     )
 
     print(f"  Done: {result['n_standing']} standing, {result['n_pointer']} pointer, "
           f"{result['n_timing_start']} t-start, {result['n_timing_end']} t-end",
           flush=True)
+
+    # Copy chalk PNG and template DDS textures into the build project's blender/texture/
+    build_tex_dir = out_dir.parent / f"solonats_{name}" / "blender" / "texture"
+    build_tex_dir.mkdir(parents=True, exist_ok=True)
+
+    if chalk_png.is_file():
+        shutil.copy2(chalk_png, build_tex_dir / chalk_png.name)
+        print(f"  Chalk PNG → {build_tex_dir / chalk_png.name}", flush=True)
+
+    _template_tex = Path(__file__).parent / "templates" / "rem_gymkhana" / "blender" / "texture"
+    _dds_names = ["Cone.dds", "Grass.dds", "ConcreteWall.dds", "NULL.dds", "Reflector.dds",
+                  "Black.dds", "MetalBright.dds", "Tree01.dds"]
+    for fname in _dds_names:
+        src = _template_tex / fname
+        dst = build_tex_dir / fname
+        if src.is_file() and not dst.is_file():
+            shutil.copy2(src, dst)
+            print(f"  Texture → {fname}", flush=True)
+
     return result
 
 

@@ -22,7 +22,7 @@ Options:
     --preview PATH      Save annotated detection image (image/pdf mode)
     --map PATH          Save clean map PNG at 72 DPI (pdf mode only)
     --out-json PATH     Where to save detected JSON (default: generated/<name>/debug/<name>.json)
-    --no-snap-pointers  Disable pointer snapping (pdf mode only)
+    --snap-pointers     Enable pointer snapping (pdf mode only, off by default)
     --snap-radius M     Max snap distance in metres (pdf mode only)
 
 GCP overrides (image mode only — passed through to detect_cones.py):
@@ -36,6 +36,11 @@ Examples:
     python build_track.py --name 2018_west --pdf "Nationals Courses.pdf" --page 2 --fbx
     python build_track.py --name seneca_v7 --json cone_data_affine.json --template seneca_runway --no-flat
     python build_track.py --name my_event --json cones.json --no-template --fbx
+
+Jobs mode (Solo Nationals batch):
+    python build_track.py --jobs solonats_jobs.json [--only 2021_west 2013_east] [--fbx]
+    Reads the same jobs file used by run_pdf_detection.py.  Tracks are named
+    solonats_<job_name> and the pre-detected JSON from generated/solonats/ is used.
 """
 
 import sys
@@ -278,9 +283,19 @@ def detect_cones_pdf(pdf_path, page, out_json, preview_path, map_path, extra_arg
 
 
 def get_dims_from_json(json_path, padding=20.0):
-    """Return (width, length) in metres from cone bounds in JSON, with padding on each side."""
+    """Return (width, length) in metres from cone bounds in JSON, with padding on each side.
+
+    If the JSON transform includes page_w_pt / page_h_pt (solonats flat maps), the full
+    page dimensions are used and padding is ignored — the road covers the whole site.
+    """
     with open(json_path) as f:
         data = json.load(f)
+    t = data.get('transform', {})
+    if t.get('page_w_pt') and t.get('page_h_pt'):
+        scale = t.get('scale', 0.3048)
+        width  = round(t['page_w_pt']  * scale, 1)
+        length = round(t['page_h_pt'] * scale, 1)
+        return width, length
     b = data.get('bounds')
     if not b:
         all_pts = (data.get('standing', []) + data.get('pointers', [])
@@ -318,8 +333,8 @@ def _run_detection(args, out_json, debug_dir):
         detect_cones(args.image, out_json, extra)
     elif args.pdf:
         extra = []
-        if args.no_snap_pointers:
-            extra.append('--no-snap-pointers')
+        if args.snap_pointers:
+            extra.append('--snap-pointers')
         if args.snap_radius is not None:
             extra += ['--snap-radius', str(args.snap_radius)]
         preview  = args.preview or os.path.join(debug_dir, f'{args.name}_preview.png')
@@ -378,6 +393,68 @@ def run_blender(blender_exe, blend_path, json_path, flat, fbx_path):
         sys.exit(f"ERROR: Blender exited with code {result.returncode}")
 
 
+SOLONATS_DETECT_DIR = os.path.join('generated', 'solonats')
+
+
+def run_jobs(jobs_path, only_names, fbx, blender_exe, generated_dir=None):
+    """Process a jobs JSON file, building each solonats track."""
+    with open(jobs_path) as f:
+        jobs = json.load(f)
+
+    only = set(only_names) if only_names else None
+    errors = 0
+    for job in jobs:
+        name = job.get('name', '?')
+        if job.get('skip'):
+            print(f"  Skipping {name} (skip=true)")
+            continue
+        if only and name not in only:
+            continue
+
+        track_name = f'solonats_{name}'
+        job_dir    = os.path.join(SOLONATS_DETECT_DIR, f'solonats_{name}')
+        json_path  = os.path.join(job_dir, f'{name}.json')
+
+        if not os.path.isfile(json_path):
+            print(f"ERROR: {name}: detected JSON not found at {json_path} — "
+                  f"run run_pdf_detection.py first", file=sys.stderr)
+            errors += 1
+            continue
+
+        print(f"\n{'='*65}")
+        print(f"  Track: {track_name}")
+        print(f"  JSON:  {json_path}")
+        print(f"{'='*65}\n")
+
+        # Build sys.argv for the single-track main() to parse
+        argv = [
+            sys.argv[0],
+            '--name',        track_name,
+            '--json',        json_path,
+            '--no-template',
+        ]
+        if fbx:
+            argv.append('--fbx')
+        if blender_exe:
+            argv += ['--blender', blender_exe]
+        if generated_dir:
+            argv += ['--generated-dir', generated_dir]
+
+        old_argv = sys.argv
+        sys.argv = argv
+        try:
+            main()
+        except SystemExit as e:
+            if e.code and e.code != 0:
+                print(f"ERROR building {track_name}: exit {e.code}", file=sys.stderr)
+                errors += 1
+        finally:
+            sys.argv = old_argv
+
+    if errors:
+        sys.exit(f"{errors} job(s) failed")
+
+
 def main():
     # ── Quick exits before full arg parsing ───────────────────────────────────
     if '--list-templates' in sys.argv:
@@ -388,13 +465,27 @@ def main():
                 print(f"  {t:30s}  ({default})")
         sys.exit(0)
 
+    # ── Jobs mode (Solo Nationals batch) ─────────────────────────────────────
+    if '--jobs' in sys.argv:
+        jp = argparse.ArgumentParser(add_help=False)
+        jp.add_argument('--jobs',          required=True)
+        jp.add_argument('--only',          nargs='*', default=None)
+        jp.add_argument('--fbx',           action='store_true', default=False)
+        jp.add_argument('--blender',       default=None)
+        jp.add_argument('--generated-dir', default=GENERATED_DIR, dest='generated_dir')
+        ja, _ = jp.parse_known_args()
+        run_jobs(ja.jobs, ja.only, ja.fbx, ja.blender, ja.generated_dir)
+        return
+
     # ── Parse args ────────────────────────────────────────────────────────────
     p = argparse.ArgumentParser(
         description='Build an AC autocross track from an image or JSON file.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument('--name',      required=True, help='Track name')
+    p.add_argument('--name',         required=True, help='Track name')
+    p.add_argument('--generated-dir', default=GENERATED_DIR, dest='generated_dir',
+                   help='Root output directory (default: generated/)')
     p.add_argument('--json',      default=None,  help='Cone data JSON path')
     p.add_argument('--image',     default=None,  help='Source map image')
     p.add_argument('--pdf',       default=None,  help='Course map PDF')
@@ -422,8 +513,8 @@ def main():
                    help='Save annotated detection image (image/pdf mode)')
     p.add_argument('--map',       default=None,
                    help='Save clean map PNG at 72 DPI (pdf mode only)')
-    p.add_argument('--no-snap-pointers', action='store_true', default=False,
-                   help='Disable pointer snapping (pdf mode only)')
+    p.add_argument('--snap-pointers', action='store_true', default=False,
+                   help='Enable pointer snapping (pdf mode only, off by default)')
     p.add_argument('--snap-radius', type=float, default=None, metavar='M',
                    help='Max snap distance in metres (pdf mode only)')
     # GCP overrides (image mode only)
@@ -463,7 +554,7 @@ def main():
         sys.exit("ERROR: Blender not found. Use --blender <path> to specify it.")
     print(f"Blender: {blender_exe}")
 
-    dest_dir = os.path.join(GENERATED_DIR, args.name)
+    dest_dir = os.path.join(args.generated_dir, args.name)
 
     print(f"\n{'='*65}")
     print(f"  Track:    {args.name}")
@@ -475,7 +566,7 @@ def main():
     print(f"{'='*65}\n")
 
     # ── Step 1: Set up project ────────────────────────────────────────────────
-    dest_dir  = os.path.join(GENERATED_DIR, args.name)
+    dest_dir  = os.path.join(args.generated_dir, args.name)
     debug_dir = os.path.join(dest_dir, 'debug')
     out_json  = args.out_json or os.path.join(debug_dir, f'{args.name}.json')
     json_path = args.json
@@ -489,12 +580,12 @@ def main():
         if not args.json:
             json_path = _run_detection(args, out_json, debug_dir)
         width, length = get_dims_from_json(json_path)
-        print(f"  Flat dimensions: {width}m x {length}m (from JSON bounds + 20m padding)")
+        print(f"  Flat dimensions: {width}m x {length}m")
         cone_blend = args.cone_blend or (
             new_flat_project.DEFAULT_CONE_BLEND
             if os.path.isfile(new_flat_project.DEFAULT_CONE_BLEND) else None
         )
-        new_flat_project.create_project(args.name, width, length)
+        new_flat_project.create_project(args.name, width, length, dest_dir=dest_dir)
         os.makedirs(debug_dir, exist_ok=True)
         blend_path = run_create_flat_template(
             blender_exe, args.name, dest_dir, width, length, cone_blend

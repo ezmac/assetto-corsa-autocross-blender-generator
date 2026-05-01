@@ -12,9 +12,17 @@ Output goes to <project_root>/blender/.
 import sys
 import os
 import math
+import shutil
 import argparse
 import bpy
 import bmesh
+
+# DDS textures to copy from rem_gymkhana template into every flat project.
+# Path is relative to this script's directory.
+_TEMPLATE_TEXTURE_SRC = os.path.join(
+    os.path.dirname(__file__), 'templates', 'rem_gymkhana', 'blender', 'texture'
+)
+_TEXTURES_TO_COPY = ['Cone.dds', 'Grass.dds', 'ConcreteWall.dds', 'NULL.dds', 'Reflector.dds']
 
 
 # ── Parse args ────────────────────────────────────────────────────────────────
@@ -44,11 +52,23 @@ def clear_scene():
             bpy.data.meshes.remove(block)
 
 
-def make_material(name, color_rgba):
+def make_material(name, color_rgba, tex_path=None):
     mat = bpy.data.materials.get(name)
     if mat is None:
         mat = bpy.data.materials.new(name)
     mat.diffuse_color = color_rgba
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out  = nt.nodes.new('ShaderNodeOutputMaterial')
+    bsdf = nt.nodes.new('ShaderNodeBsdfPrincipled')
+    nt.links.new(bsdf.outputs['BSDF'], out.inputs['Surface'])
+    if tex_path and os.path.isfile(tex_path):
+        img  = bpy.data.images.load(tex_path, check_existing=True)
+        img.filepath = bpy.path.relpath(tex_path)
+        tex  = nt.nodes.new('ShaderNodeTexImage')
+        tex.image = img
+        nt.links.new(tex.outputs['Color'], bsdf.inputs['Base Color'])
     return mat
 
 
@@ -238,12 +258,25 @@ def main():
     # ── Clear default scene ────────────────────────────────────────────────────
     clear_scene()
 
+    # ── Copy DDS textures into blender/texture/ ───────────────────────────────
+    tex_dir = os.path.join(blender_dir, 'texture')
+    os.makedirs(tex_dir, exist_ok=True)
+    for fname in _TEXTURES_TO_COPY:
+        src = os.path.join(_TEMPLATE_TEXTURE_SRC, fname)
+        dst = os.path.join(tex_dir, fname)
+        if os.path.isfile(src) and not os.path.isfile(dst):
+            shutil.copy2(src, dst)
+            print(f"  Copied texture: {fname}")
+
+    def tex(fname):
+        return os.path.join(tex_dir, fname)
+
     # ── Materials ─────────────────────────────────────────────────────────────
-    mat_road  = make_material('ROAD',         (0.15, 0.15, 0.15, 1.0))
-    mat_grass = make_material('Grass',        (0.13, 0.40, 0.08, 1.0))
-    mat_wall  = make_material('ConcreteWall', (0.70, 0.70, 0.70, 1.0))
-    mat_cone  = make_material('Cone',         (0.90, 0.35, 0.00, 1.0))
-    mat_null = make_material('Null',          (0.00, 0.00, 0.00, 1.0))
+    mat_road  = make_material('ROAD',         (0.15, 0.15, 0.15, 1.0))   # chalk applied later
+    mat_grass = make_material('Grass',        (0.13, 0.40, 0.08, 1.0), tex_path=tex('Grass.dds'))
+    mat_wall  = make_material('ConcreteWall', (0.70, 0.70, 0.70, 1.0), tex_path=tex('ConcreteWall.dds'))
+    mat_cone  = make_material('Cone',         (0.90, 0.35, 0.00, 1.0), tex_path=tex('Cone.dds'))
+    mat_null  = make_material('Null',         (0.00, 0.00, 0.00, 1.0))
     mat_null.use_fake_user = True   # prevent orphan purge on save (Null is never assigned)
 
     # ── Road plane ────────────────────────────────────────────────────────────
@@ -286,13 +319,17 @@ def main():
 
     # ── Export FBX ────────────────────────────────────────────────────────────
     print(f"Exporting FBX: {fbx_path}")
+    for _img in bpy.data.images:
+        if _img.filepath:
+            _img.filepath = os.path.abspath(bpy.path.abspath(_img.filepath))
     bpy.ops.export_scene.fbx(
-        filepath=fbx_path,
+        filepath=os.path.abspath(fbx_path).replace('/', '\\'),
         object_types={'MESH', 'EMPTY'},
         global_scale=1.0,
         apply_scale_options='FBX_SCALE_ALL',
         use_selection=False,
-        path_mode='AUTO',
+        path_mode='COPY',
+        embed_textures=False,
     )
 
     # ── Save .blend ───────────────────────────────────────────────────────────

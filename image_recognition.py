@@ -530,6 +530,9 @@ def detect_cones_from_map(
     window_px=35,
     min_component_px=3,
     max_component_px=200,
+    consensus_size=True,
+    size_ratio_lo=0.3,
+    size_ratio_hi=3.5,
     use_quantize=False,
     quantize_colors=32,
     classifier_labels=None,
@@ -589,6 +592,16 @@ def detect_cones_from_map(
         Half-size of the local window used when analysing each blob's shape.
     min_component_px : int
         Minimum orange-pixel count for a raw connected component to be kept.
+    consensus_size : bool
+        If True (default), after the fixed min/max filter compute the median
+        blob size and discard blobs outside [median*size_ratio_lo,
+        median*size_ratio_hi].  Removes text glyphs and legend artifacts whose
+        pixel counts differ from the cone-symbol consensus.  Disable with
+        --no-consensus-size if cone sizes vary intentionally on your map.
+    size_ratio_lo : float
+        Lower multiplier on median blob size (default 0.3).
+    size_ratio_hi : float
+        Upper multiplier on median blob size (default 3.5).
     use_quantize : bool
         If True, quantize the image to `quantize_colors` palette entries and
         use palette-based orange detection instead of per-pixel thresholding.
@@ -656,6 +669,20 @@ def detect_cones_from_map(
         if min_component_px <= s <= max_component_px
     ]
     print(f"Raw components {min_component_px}-{max_component_px} px: {len(valid)}")
+
+    # Consensus-size filter: all cone symbols on a map are printed at the same
+    # scale, so they cluster around a common pixel area.  Text, labels, and
+    # legend artifacts typically fall well outside that cluster.
+    if consensus_size and len(valid) > 4:
+        blob_sizes = sorted(v[2] for v in valid)
+        # Use the lower half to anchor the median — avoids large outliers skewing it.
+        ref = blob_sizes[: max(1, len(blob_sizes) // 2)]
+        median_size = ref[len(ref) // 2]
+        lo = median_size * size_ratio_lo
+        hi = median_size * size_ratio_hi
+        valid = [v for v in valid if lo <= v[2] <= hi]
+        print(f"After consensus-size filter (median {median_size:.0f} px, "
+              f"range {lo:.0f}-{hi:.0f} px): {len(valid)} blobs")
 
     # ------------------------------------------------------------------
     # Optional: train SVM classifier from labeled examples
@@ -954,6 +981,12 @@ def main():
     parser.add_argument('--classifier', default=None, metavar='LABELS_JSON',
                         help='Path to labels.json from label_cones.py; trains SVM '
                              'to replace rule-based classification (requires scikit-learn)')
+    parser.add_argument('--no-consensus-size', action='store_true',
+                        help='Disable median-based size outlier filter (on by default)')
+    parser.add_argument('--size-ratio-lo', type=float, default=0.3,
+                        help='Lower multiplier on median blob size for consensus filter (default: 0.3)')
+    parser.add_argument('--size-ratio-hi', type=float, default=3.5,
+                        help='Upper multiplier on median blob size for consensus filter (default: 3.5)')
     parser.add_argument('--debug', action='store_true',
                         help='Save annotated debug image')
     args = parser.parse_args()
@@ -974,6 +1007,9 @@ def main():
         mask_params=mask_params,
         center_pixel=args.center_px,
         max_component_px=max_comp,
+        consensus_size=not args.no_consensus_size,
+        size_ratio_lo=args.size_ratio_lo,
+        size_ratio_hi=args.size_ratio_hi,
         use_quantize=args.quantize,
         quantize_colors=args.quantize_colors,
         classifier_labels=args.classifier,

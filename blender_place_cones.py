@@ -42,16 +42,20 @@ else:
 RAYCAST_MESHES = ['1ROAD0', '1ROAD1', '1ROAD2', '1GRASS0', '1GRASS1']
 AC_MARKER_PREFIXES = ['AC_PIT_', 'AC_START_', 'AC_HOTLAP_START_',
                       'AC_TIME_', 'AC_AB_', 'AC_POBJECT_GCP_']
-SPAWN_BACK_M = 5.0   # metres behind start gate for spawn markers
+SPAWN_BACK_M           = 5.0  # metres behind start gate for spawn markers (fallback)
+SPAWN_BACK_FROM_STAGE_M = 3.0  # metres behind stage_cone_pos for spawn markers
 
 # ── Load JSON ─────────────────────────────────────────────────────────────────
 with open(JSON_PATH) as f:
     data = json.load(f)
 
-standing = data.get('standing', [])
-pointers = data.get('pointers', [])
-greens   = data.get('timing_start', [])
-reds     = data.get('timing_end',   [])
+standing      = data.get('standing', [])
+pointers      = data.get('pointers', [])
+greens        = data.get('timing_start', [])
+reds          = data.get('timing_end',   [])
+start_gate    = data.get('timing_start_gate')   # {"a": [bx,by], "b": [bx,by]} or None
+finish_gate   = data.get('timing_end_gate')
+stage_cone_pos = data.get('stage_cone_pos')     # [bx, by] of cones 100-103 centroid, or None
 
 # Compute bounds if missing (old detect_cones.py format)
 if 'bounds' not in data:
@@ -76,18 +80,34 @@ print(f"Cones: {len(standing)} standing, {len(pointers)} pointer  "
 if FLAT:
     import bmesh as _bmesh
 
-    PADDING   = 30.0   # metres of road beyond the outermost cone on each side
-    course_w  = b['xmax'] - b['xmin']
-    course_h  = b['ymax'] - b['ymin']
-    req_w     = course_w + 2 * PADDING
-    req_h     = course_h + 2 * PADDING
+    # If the JSON has page dimensions (solonats), size the road to the full page and
+    # center it at the page center in world space — this makes UV mapping exact and
+    # lets east/west courses share the same template without scale drift.
+    _t = data.get('transform', {})
+    if _t.get('page_w_pt') and _t.get('page_h_pt'):
+        _sc      = _t.get('scale', 0.3048)
+        _ox      = _t.get('ox',    0.0)
+        _oy      = _t.get('oy',    0.0)
+        req_w    = round(_t['page_w_pt']  * _sc, 3)
+        req_h    = round(_t['page_h_pt'] * _sc, 3)
+        # Page center in world space: ox + page_w/2*scale, oy - page_h/2*scale
+        road_cx  = _ox + req_w / 2
+        road_cy  = _oy - req_h / 2
+    else:
+        PADDING  = 30.0
+        req_w    = (b['xmax'] - b['xmin']) + 2 * PADDING
+        req_h    = (b['ymax'] - b['ymin']) + 2 * PADDING
+        road_cx  = cx
+        road_cy  = cy
 
     for name in ['1ROAD0', '1WALL0', 'Terrain']:
         obj = bpy.data.objects.get(name)
         if obj is None:
             continue
-        obj.location.x = cx
-        obj.location.y = cy
+        obj.location.x = road_cx
+        obj.location.y = road_cy
+        if name == '1ROAD0':
+            obj.location.z = 0.002
 
         # Scale mesh vertices so the object is at least req_w x req_h.
         # Compute current extents from local-space vertices.
@@ -120,26 +140,26 @@ if FLAT:
     hw = req_w / 2 + LIGHT_MARGIN
     hh = req_h / 2 + LIGHT_MARGIN
     corners = [
-        (cx - hw, cy + hh),   # upper-left
-        (cx + hw, cy + hh),   # upper-right
-        (cx + hw, cy - hh),   # lower-right
-        (cx - hw, cy - hh),   # lower-left
+        (road_cx - hw, road_cy + hh),   # upper-left
+        (road_cx + hw, road_cy + hh),   # upper-right
+        (road_cx + hw, road_cy - hh),   # lower-right
+        (road_cx - hw, road_cy - hh),   # lower-left
     ]
     lights = sorted([o for o in bpy.data.objects if 'StudiumLight' in o.name],
                     key=lambda o: o.name)
     for i, obj in enumerate(lights[:4]):
         lx, ly = corners[i]
         obj.location = (lx, ly, obj.location.z)
-        obj.rotation_euler.z = math.atan2(cy - ly, cx - lx)
+        obj.rotation_euler.z = math.atan2(road_cy - ly, road_cx - lx)
     if lights:
         print(f"Placed {min(len(lights),4)} stadium lights at wall corners")
 
     # ── Trees: distribute evenly around a rectangle outside the wall ──────────
     TREE_MARGIN = 15.0    # metres outside the wall edge
-    tx0 = cx - req_w / 2 - TREE_MARGIN
-    tx1 = cx + req_w / 2 + TREE_MARGIN
-    ty0 = cy - req_h / 2 - TREE_MARGIN
-    ty1 = cy + req_h / 2 + TREE_MARGIN
+    tx0 = road_cx - req_w / 2 - TREE_MARGIN
+    tx1 = road_cx + req_w / 2 + TREE_MARGIN
+    ty0 = road_cy - req_h / 2 - TREE_MARGIN
+    ty1 = road_cy + req_h / 2 + TREE_MARGIN
     tw, th = tx1 - tx0, ty1 - ty0
     perim = 2 * (tw + th)
 
@@ -274,29 +294,65 @@ def place_marker(name, x, y, z_offset=0.0, rot=(0.0, 0.0, 0.0)):
     obj.hide_render    = True
     return obj
 
-if len(greens) == 2 and len(reds) == 2:
+def _gate_endpoints(gate_data, fallback_cones):
+    """Return (Vector_a, Vector_b) for a timing gate.
+
+    Uses explicit bar endpoints from gate_data if available, otherwise falls
+    back to the two timing cone positions.  Returns (None, None) if neither.
+    """
+    from mathutils import Vector
+    if gate_data:
+        a = gate_data["a"]
+        b = gate_data["b"]
+        return Vector((a[0], a[1], 0)), Vector((b[0], b[1], 0))
+    if len(fallback_cones) >= 2:
+        c0, c1 = fallback_cones[0], fallback_cones[1]
+        return Vector((c0['bx'], c0['by'], 0)), Vector((c1['bx'], c1['by'], 0))
+    return None, None
+
+
+has_start_gate  = start_gate  is not None or len(greens) >= 2
+has_finish_gate = finish_gate is not None or len(reds)   >= 2
+
+if has_start_gate and has_finish_gate:
     from mathutils import Vector
 
-    g0 = Vector((greens[0]['bx'], greens[0]['by'], 0))
-    g1 = Vector((greens[1]['bx'], greens[1]['by'], 0))
-    r0 = Vector((reds[0]['bx'],   reds[0]['by'],   0))
-    r1 = Vector((reds[1]['bx'],   reds[1]['by'],   0))
+    g0, g1 = _gate_endpoints(start_gate,  greens)
+    r0, r1 = _gate_endpoints(finish_gate, reds)
     g_mid = (g0 + g1) * 0.5
 
-    # Entry direction: perpendicular to gate toward course centroid
-    cent = Vector((sum(c['bx'] for c in standing) / max(len(standing), 1),
-                   sum(c['by'] for c in standing) / max(len(standing), 1), 0))
-    gate  = (g1 - g0).normalized()
-    perp  = Vector((-gate.y, gate.x, 0))
-    entry = perp if perp.dot(cent - g_mid) > 0 else -perp
+    def interior_perp(pa, pb, ref_x=None, ref_y=None):
+        """Return the perpendicular to (pa→pb) pointing toward (ref_x, ref_y).
 
-    # Left/right from driver's perspective
-    left = Vector((-entry.y, entry.x, 0))
-    def is_left(c, mid):
-        return Vector((c['bx'] - mid.x, c['by'] - mid.y, 0)).dot(left) > 0
+        Defaults to the course centroid when no reference is provided.
+        """
+        if ref_x is None:
+            ref_x, ref_y = cx, cy
+        mid     = (pa + pb) * 0.5
+        bar_vec = (pb - pa).normalized()
+        perp    = Vector((-bar_vec.y, bar_vec.x, 0))
+        to_ref  = Vector((ref_x - mid.x, ref_y - mid.y, 0))
+        return perp if to_ref.dot(perp) > 0 else -perp
 
-    gL, gR = (greens[0], greens[1]) if is_left(greens[0], g_mid) else (greens[1], greens[0])
-    rL, rR = (reds[0],   reds[1])   if is_left(reds[0],   (r0+r1)*0.5) else (reds[1], reds[0])
+    def gate_lr(pa, pb, travel_dir):
+        """Return (left, right) endpoints given the driver's travel direction."""
+        mid      = (pa + pb) * 0.5
+        left_vec = Vector((-travel_dir.y, travel_dir.x, 0))
+        return (pa, pb) if (pa - mid).dot(left_vec) > 0 else (pb, pa)
+
+    # Start: entry = away from stage cones (100-103) if available, else toward centroid
+    if stage_cone_pos:
+        # Stage is behind the start gate; entry points away from it = interior side
+        entry = interior_perp(g0, g1, ref_x=stage_cone_pos[0], ref_y=stage_cone_pos[1])
+        print(f"  Start direction from stage_cone_pos ({stage_cone_pos[0]:.1f},{stage_cone_pos[1]:.1f})")
+    else:
+        entry = interior_perp(g0, g1)
+        print(f"  Start direction from centroid ({cx:.1f},{cy:.1f})")
+    gL, gR = gate_lr(g0, g1, entry)
+
+    # Finish: driver exits away from interior (toward centroid = interior)
+    finish_exit = -interior_perp(r0, r1)
+    rL, rR      = gate_lr(r0, r1, finish_exit)
 
     # Remove stale AC_TIME empties from old runs
     for n in ('AC_TIME_0_L', 'AC_TIME_0_R', 'AC_TIME_1_L', 'AC_TIME_1_R'):
@@ -304,46 +360,48 @@ if len(greens) == 2 and len(reds) == 2:
         if stale and stale.type == 'EMPTY':
             bpy.data.objects.remove(stale, do_unlink=True)
 
-    place_marker('AC_AB_START_L',  gL['bx'], gL['by'])
-    place_marker('AC_AB_START_R',  gR['bx'], gR['by'])
-    place_marker('AC_AB_FINISH_L', rL['bx'], rL['by'])
-    place_marker('AC_AB_FINISH_R', rR['bx'], rR['by'])
+    place_marker('AC_AB_START_L',  gL.x, gL.y)
+    place_marker('AC_AB_START_R',  gR.x, gR.y)
+    place_marker('AC_AB_FINISH_L', rL.x, rL.y)
+    place_marker('AC_AB_FINISH_R', rR.x, rR.y)
 
-    spawn_x = g_mid.x - entry.x * SPAWN_BACK_M
-    spawn_y = g_mid.y - entry.y * SPAWN_BACK_M
-    z_rot   = math.atan2(entry.x, entry.y)
-    rot     = (-math.pi/2, 0.0, z_rot)
+    if stage_cone_pos:
+        spawn_x = stage_cone_pos[0] - entry.x * SPAWN_BACK_FROM_STAGE_M
+        spawn_y = stage_cone_pos[1] - entry.y * SPAWN_BACK_FROM_STAGE_M
+    else:
+        spawn_x = g_mid.x - entry.x * SPAWN_BACK_M
+        spawn_y = g_mid.y - entry.y * SPAWN_BACK_M
+    z_rot = math.atan2(entry.x, entry.y)
+    rot   = (-math.pi/2, 0.0, z_rot)
     for n in ('AC_PIT_0', 'AC_START_0', 'AC_HOTLAP_START_0'):
         place_marker(n, spawn_x, spawn_y, z_offset=1.5, rot=rot)
 
     print(f"Timing + spawn markers placed  heading={math.degrees(z_rot):.1f}°")
+    print(f"  Start: L=({gL.x:.1f},{gL.y:.1f})  R=({gR.x:.1f},{gR.y:.1f})")
+    print(f"  Finish: L=({rL.x:.1f},{rL.y:.1f})  R=({rR.x:.1f},{rR.y:.1f})")
 
-elif len(greens) >= 2:
-    # No reds — at least put timing start markers
-    dx = greens[1]['bx'] - greens[0]['bx']
-    dy = greens[1]['by'] - greens[0]['by']
-    g_len = math.hypot(dx, dy)
-    perp1 = ( dy/g_len, -dx/g_len)
-    perp2 = (-dy/g_len,  dx/g_len)
-    perp  = perp1 if perp1[1] < perp2[1] else perp2
-    rz    = math.atan2(perp[1], perp[0]) - math.pi/2
-    gx    = sum(g['bx'] for g in greens) / len(greens)
-    gy    = sum(g['by'] for g in greens) / len(greens)
+elif has_start_gate:
+    from mathutils import Vector
+    g0, g1 = _gate_endpoints(start_gate, greens)
+    g_mid  = (g0 + g1) * 0.5
+    gate_vec = (g1 - g0).normalized()
+    # Pick perpendicular pointing generally toward lower Y (course usually below start)
+    perp1 = Vector((-gate_vec.y, gate_vec.x, 0))
+    perp2 = -perp1
+    entry = perp1 if perp1.y < 0 else perp2
+    rz    = math.atan2(entry.x, entry.y)
 
     for mname, lat in (('AC_PIT_0', 0), ('AC_START_0', -3), ('AC_HOTLAP_START_0', 3)):
         place_marker(mname,
-                     gx + dx/g_len * lat - perp[0] * SPAWN_BACK_M,
-                     gy + dy/g_len * lat - perp[1] * SPAWN_BACK_M,
+                     g_mid.x + gate_vec.x * lat - entry.x * SPAWN_BACK_M,
+                     g_mid.y + gate_vec.y * lat - entry.y * SPAWN_BACK_M,
                      z_offset=1.5, rot=(-math.pi/2, 0, rz))
-    for side, cone, sign in (('L', greens[0], -1), ('R', greens[1], 1)):
-        place_marker(f'AC_TIME_0_{side}',
-                     cone['bx'] + sign * dx/g_len * 2,
-                     cone['by'] + sign * dy/g_len * 2,
-                     z_offset=1.5)
-    print("Start gate + spawn markers placed (no end gate — reds missing)")
+    place_marker('AC_AB_START_L', g0.x, g0.y)
+    place_marker('AC_AB_START_R', g1.x, g1.y)
+    print("Start gate + spawn markers placed (no end gate)")
 
 else:
-    print("No timing markers (no green/red cones in data)")
+    print("No timing markers (no gate data in JSON)")
 
 # ── Fix AC markers: Null material + hide_render ───────────────────────────────
 null_mat = bpy.data.materials.get('Null')
@@ -369,14 +427,89 @@ if shared:
 else:
     print(f"OK: all {len(standing)+len(pointers)} cones have independent mesh data")
 
+# ── Chalk texture on road surface ────────────────────────────────────────────
+_chalk_src  = os.path.splitext(os.path.abspath(JSON_PATH))[0] + '_chalk.png'
+_blend_dir  = os.path.dirname(os.path.abspath(bpy.data.filepath))
+_tex_dir    = os.path.join(_blend_dir, 'texture')
+_chalk_name = os.path.basename(_chalk_src)
+_chalk_path = os.path.join(_tex_dir, _chalk_name)   # canonical in-project copy
+
+if os.path.isfile(_chalk_src) and '1ROAD0' in bpy.data.objects:
+    # Copy chalk PNG into blender/texture/ so it travels with the project
+    os.makedirs(_tex_dir, exist_ok=True)
+    if not os.path.isfile(_chalk_path) or os.path.getmtime(_chalk_src) > os.path.getmtime(_chalk_path):
+        import shutil as _shutil
+        _shutil.copy2(_chalk_src, _chalk_path)
+        print(f"Copied chalk PNG → {_chalk_path}")
+
+    road = bpy.data.objects['1ROAD0']
+    mesh = road.data
+    t      = data.get('transform', {})
+    ox     = t.get('ox',        0.0)
+    oy     = t.get('oy',        0.0)
+    scale  = t.get('scale',     0.3048)
+    page_w = t.get('page_w_pt', 1.0)
+    page_h = t.get('page_h_pt', 1.0)
+
+    # Build / update UV layer 'chalk' on the road mesh
+    uv_layer = mesh.uv_layers.get('chalk') or mesh.uv_layers.new(name='chalk')
+    mesh.uv_layers.active = uv_layer
+
+    # Force depsgraph update so matrix_world reflects any location changes made above.
+    bpy.context.view_layer.update()
+    mat_world = road.matrix_world
+    for poly in mesh.polygons:
+        for loop_idx in poly.loop_indices:
+            v_idx = mesh.loops[loop_idx].vertex_index
+            wp = mat_world @ mesh.vertices[v_idx].co
+            # Blender world (m) → PDF page coords (pt); y is flipped in pdf_to_blender
+            pdf_x = (wp.x - ox) / scale
+            pdf_y = (oy - wp.y) / scale
+            uv_layer.data[loop_idx].uv = (pdf_x / page_w, 1.0 - pdf_y / page_h)
+
+    # Wire road material to chalk texture via relative path
+    img = bpy.data.images.load(_chalk_path, check_existing=True)
+    img.filepath = bpy.path.relpath(_chalk_path)
+    mat = mesh.materials[0] if mesh.materials else bpy.data.materials.new('ROAD')
+    if not mesh.materials:
+        mesh.materials.append(mat)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out  = nt.nodes.new('ShaderNodeOutputMaterial')
+    bsdf = nt.nodes.new('ShaderNodeBsdfPrincipled')
+    tex  = nt.nodes.new('ShaderNodeTexImage')
+    uv_n = nt.nodes.new('ShaderNodeUVMap')
+    tex.image   = img
+    uv_n.uv_map = 'chalk'
+    nt.links.new(uv_n.outputs['UV'],     tex.inputs['Vector'])
+    nt.links.new(tex.outputs['Color'],   bsdf.inputs['Base Color'])
+    nt.links.new(bsdf.outputs['BSDF'],   out.inputs['Surface'])
+    print(f"Chalk texture applied to 1ROAD0: {_chalk_path}")
+else:
+    if not os.path.isfile(_chalk_src):
+        print(f"No chalk PNG found at {_chalk_src}, skipping texture")
+    elif '1ROAD0' not in bpy.data.objects:
+        print("No 1ROAD0 object found, skipping chalk texture")
+
 # ── FBX export ────────────────────────────────────────────────────────────────
 if FBX_PATH:
-    os.makedirs(os.path.dirname(os.path.abspath(FBX_PATH)), exist_ok=True)
+    _fbx_dir = os.path.dirname(os.path.abspath(FBX_PATH))
+    os.makedirs(_fbx_dir, exist_ok=True)
+
+    # Make all image paths absolute before export so Blender can find them to copy
+    for _img in bpy.data.images:
+        if _img.filepath:
+            _img.filepath = os.path.abspath(bpy.path.abspath(_img.filepath))
+
+    _fbx_abs = os.path.abspath(FBX_PATH).replace('/', '\\')
     bpy.ops.export_scene.fbx(
-        filepath=os.path.abspath(FBX_PATH),
+        filepath=_fbx_abs,
         object_types={'MESH', 'EMPTY'},
         apply_scale_options='FBX_SCALE_ALL',
         use_selection=False,
+        path_mode='COPY',
+        embed_textures=False,
     )
     print(f"FBX exported: {FBX_PATH}")
 
