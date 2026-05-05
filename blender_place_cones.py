@@ -100,6 +100,14 @@ if FLAT:
         road_cx  = cx
         road_cy  = cy
 
+    # In flat mode, remove gymkhana-template grass meshes — Terrain covers the background.
+    if FLAT:
+        for name in ('1GRASS0', '1GRASS1'):
+            obj = bpy.data.objects.get(name)
+            if obj:
+                bpy.data.objects.remove(obj, do_unlink=True)
+                print(f"  Removed {name} (flat course)")
+
     for name in ['1ROAD0', '1WALL0', 'Terrain']:
         obj = bpy.data.objects.get(name)
         if obj is None:
@@ -108,6 +116,8 @@ if FLAT:
         obj.location.y = road_cy
         if name == '1ROAD0':
             obj.location.z = 0.002
+        elif FLAT and name == 'Terrain':
+            obj.location.z = 0.0   # clear any template origin offset; vertex z set below
 
         # Scale mesh vertices so the object is at least req_w x req_h.
         # Compute current extents from local-space vertices.
@@ -122,16 +132,21 @@ if FLAT:
         sx = max(req_w / cur_w, 1.0) if cur_w > 0 else 1.0
         sy = max(req_h / cur_h, 1.0) if cur_h > 0 else 1.0
 
-        if sx > 1.0 or sy > 1.0:
+        if sx > 1.0 or sy > 1.0 or (FLAT and name == 'Terrain'):
             bm = _bmesh.new()
             bm.from_mesh(obj.data)
             for v in bm.verts:
                 v.co.x *= sx
                 v.co.y *= sy
+                if FLAT and name == 'Terrain':
+                    v.co.z = -0.30   # flatten real-terrain elevation for flat courses
             bm.to_mesh(obj.data)
             bm.free()
             obj.data.update()
-            print(f"  Scaled {name}: x*{sx:.2f} y*{sy:.2f} -> {cur_w*sx:.0f}m x {cur_h*sy:.0f}m")
+            if sx > 1.0 or sy > 1.0:
+                print(f"  Scaled {name}: x*{sx:.2f} y*{sy:.2f} -> {cur_w*sx:.0f}m x {cur_h*sy:.0f}m")
+            if FLAT and name == 'Terrain':
+                print(f"  Terrain: flattened vertex Z to -0.30 (flat course)")
         else:
             print(f"  {name}: {cur_w:.0f}m x {cur_h:.0f}m fits course ({req_w:.0f}m x {req_h:.0f}m needed)")
 
@@ -342,8 +357,8 @@ if has_start_gate and has_finish_gate:
 
     # Start: entry = away from stage cones (100-103) if available, else toward centroid
     if stage_cone_pos:
-        # Stage is behind the start gate; entry points away from it = interior side
-        entry = interior_perp(g0, g1, ref_x=stage_cone_pos[0], ref_y=stage_cone_pos[1])
+        # Stage is behind the start gate; negate so entry points away from stage (into course)
+        entry = -interior_perp(g0, g1, ref_x=stage_cone_pos[0], ref_y=stage_cone_pos[1])
         print(f"  Start direction from stage_cone_pos ({stage_cone_pos[0]:.1f},{stage_cone_pos[1]:.1f})")
     else:
         entry = interior_perp(g0, g1)
@@ -435,12 +450,23 @@ _chalk_name = os.path.basename(_chalk_src)
 _chalk_path = os.path.join(_tex_dir, _chalk_name)   # canonical in-project copy
 
 if os.path.isfile(_chalk_src) and '1ROAD0' in bpy.data.objects:
-    # Copy chalk PNG into blender/texture/ so it travels with the project
+    # Copy chalk PNG into blender/texture/ and convert to DDS for ksEditor
     os.makedirs(_tex_dir, exist_ok=True)
     if not os.path.isfile(_chalk_path) or os.path.getmtime(_chalk_src) > os.path.getmtime(_chalk_path):
         import shutil as _shutil
         _shutil.copy2(_chalk_src, _chalk_path)
         print(f"Copied chalk PNG → {_chalk_path}")
+
+    _chalk_dds_name = os.path.splitext(_chalk_name)[0] + '.dds'
+    _chalk_dds_path = os.path.join(_tex_dir, _chalk_dds_name)
+    if not os.path.isfile(_chalk_dds_path) or os.path.getmtime(_chalk_path) > os.path.getmtime(_chalk_dds_path):
+        import subprocess as _sp
+        _r = _sp.run(['convert', _chalk_path, _chalk_dds_path], capture_output=True)
+        if _r.returncode == 0:
+            print(f"Converted chalk PNG → DDS: {_chalk_dds_path}")
+        else:
+            print(f"WARNING: chalk DDS conversion failed: {_r.stderr.decode().strip()}")
+            _chalk_dds_path = _chalk_path   # fall back to PNG for viewport
 
     road = bpy.data.objects['1ROAD0']
     mesh = road.data
@@ -451,8 +477,12 @@ if os.path.isfile(_chalk_src) and '1ROAD0' in bpy.data.objects:
     page_w = t.get('page_w_pt', 1.0)
     page_h = t.get('page_h_pt', 1.0)
 
-    # Build / update UV layer 'chalk' on the road mesh
-    uv_layer = mesh.uv_layers.get('chalk') or mesh.uv_layers.new(name='chalk')
+    # Write chalk UVs into the first UV layer (UVMap) so ksEditor picks them up.
+    # Remove any extra layers first; ksEditor always reads layer 0.
+    while len(mesh.uv_layers) > 1:
+        mesh.uv_layers.remove(mesh.uv_layers[-1])
+    uv_layer = mesh.uv_layers[0] if mesh.uv_layers else mesh.uv_layers.new(name='UVMap')
+    uv_layer.name = 'UVMap'
     mesh.uv_layers.active = uv_layer
 
     # Force depsgraph update so matrix_world reflects any location changes made above.
@@ -467,9 +497,9 @@ if os.path.isfile(_chalk_src) and '1ROAD0' in bpy.data.objects:
             pdf_y = (oy - wp.y) / scale
             uv_layer.data[loop_idx].uv = (pdf_x / page_w, 1.0 - pdf_y / page_h)
 
-    # Wire road material to chalk texture via relative path
-    img = bpy.data.images.load(_chalk_path, check_existing=True)
-    img.filepath = bpy.path.relpath(_chalk_path)
+    # Wire road material to chalk DDS (Blender loads DDS fine for viewport too)
+    img = bpy.data.images.load(_chalk_dds_path, check_existing=True)
+    img.filepath = f'//texture/{os.path.basename(_chalk_dds_path)}'
     mat = mesh.materials[0] if mesh.materials else bpy.data.materials.new('ROAD')
     if not mesh.materials:
         mesh.materials.append(mat)
@@ -485,7 +515,7 @@ if os.path.isfile(_chalk_src) and '1ROAD0' in bpy.data.objects:
     nt.links.new(uv_n.outputs['UV'],     tex.inputs['Vector'])
     nt.links.new(tex.outputs['Color'],   bsdf.inputs['Base Color'])
     nt.links.new(bsdf.outputs['BSDF'],   out.inputs['Surface'])
-    print(f"Chalk texture applied to 1ROAD0: {_chalk_path}")
+    print(f"Chalk texture applied to 1ROAD0: {_chalk_dds_path}")
 else:
     if not os.path.isfile(_chalk_src):
         print(f"No chalk PNG found at {_chalk_src}, skipping texture")
@@ -502,7 +532,7 @@ if FBX_PATH:
         if _img.filepath:
             _img.filepath = os.path.abspath(bpy.path.abspath(_img.filepath))
 
-    _fbx_abs = os.path.abspath(FBX_PATH).replace('/', '\\')
+    _fbx_abs = os.path.abspath(FBX_PATH)
     bpy.ops.export_scene.fbx(
         filepath=_fbx_abs,
         object_types={'MESH', 'EMPTY'},
@@ -512,6 +542,12 @@ if FBX_PATH:
         embed_textures=False,
     )
     print(f"FBX exported: {FBX_PATH}")
+
+# ── Restore Windows-relative image paths before saving .blend ─────────────────
+# Only touch images with absolute paths; relative paths (starting //) are already correct.
+for _img in bpy.data.images:
+    if _img.filepath and not _img.filepath.startswith('//'):
+        _img.filepath = f'//texture/{os.path.basename(_img.filepath)}'
 
 # ── Save ──────────────────────────────────────────────────────────────────────
 bpy.ops.wm.save_mainfile()

@@ -19,7 +19,8 @@ Usage:
         --page 2 \\
         --out  west_2018.json \\
         [--preview west_2018.png] \\
-        [--no-snap-pointers]
+        [--snap-pointers] \\
+        [--invert-start-gate] [--invert-finish-gate]
 """
 
 import sys
@@ -971,6 +972,60 @@ def find_cones_by_label(page, drawings, cone_numbers, m_per_pt, cx_centroid, cy_
     return results
 
 
+def _validate_timing_lights(det, m_per_pt):
+    """Validate and correct timing light positions (gate endpoints).
+
+    Timing lights should be positioned 50ft wider than the gate (25ft on each side),
+    or 75ft minimum when gate width is unknown. This ensures consistent timing sensor
+    placement across all courses.
+
+    Returns the detection dict, possibly with corrected gate_a and gate_b.
+    """
+    if not det.get("gate_a") or not det.get("gate_b"):
+        return det
+
+    ax, ay = det["gate_a"]
+    bx, by = det["gate_b"]
+
+    # Gate width in PDF points (1pt = 1ft)
+    gate_width_pt = math.hypot(bx - ax, by - ay)
+    gate_width_ft = gate_width_pt  # 1 pt = 1 ft
+
+    # Desired timing light width: 50ft wider than gate, minimum 75ft
+    desired_width_ft = max(75.0, gate_width_ft + 50.0)
+    desired_width_pt = desired_width_ft
+
+    # If timing lights are significantly different, adjust them
+    if abs(gate_width_pt - desired_width_pt) > 5.0:  # Allow 5ft tolerance
+        # Expand/contract gate endpoints symmetrically
+        # Direction along gate
+        dx = bx - ax
+        dy = by - ay
+        length = math.hypot(dx, dy)
+        if length > 0:
+            dx_norm = dx / length
+            dy_norm = dy / length
+
+            # Center of gate
+            cx_gate = (ax + bx) / 2
+            cy_gate = (ay + by) / 2
+
+            # New endpoints at desired width
+            half_width = desired_width_pt / 2
+            new_ax = cx_gate - dx_norm * half_width
+            new_ay = cy_gate - dy_norm * half_width
+            new_bx = cx_gate + dx_norm * half_width
+            new_by = cy_gate + dy_norm * half_width
+
+            print(f"  Timing lights corrected: {gate_width_ft:.1f}ft → {desired_width_ft:.1f}ft",
+                  file=sys.stderr)
+            det = dict(det)  # shallow copy
+            det["gate_a"] = (new_ax, new_ay)
+            det["gate_b"] = (new_bx, new_by)
+
+    return det
+
+
 def tag_timing_cones(standing, text_detections, m_per_pt, cx, cy,
                      radius_m=10.0):
     """Place timing markers at bar/text positions and tag nearby standing cones.
@@ -1003,14 +1058,26 @@ def tag_timing_cones(standing, text_detections, m_per_pt, cx, cy,
             gate_world = {"a": [ax, ay], "b": [bx, by]}
 
         if det.get("source") == "bar":
-            marker = {"bx": round(tbx, 3), "by": round(tby, 3),
-                      "type": det["type"], "size": 1, "source": "bar"}
+            # Create two timing cones: one at each gate endpoint (left and right sensors)
             if gate_world:
-                marker["gate"] = gate_world
-            if det["type"] == "timing_start":
-                timing_start.append(marker)
+                a_bx, a_by = gate_world["a"]
+                b_bx, b_by = gate_world["b"]
+                cone_a = {"bx": round(a_bx, 3), "by": round(a_by, 3),
+                          "type": det["type"], "size": 1, "source": "bar"}
+                cone_b = {"bx": round(b_bx, 3), "by": round(b_by, 3),
+                          "type": det["type"], "size": 1, "source": "bar"}
+                if det["type"] == "timing_start":
+                    timing_start.extend([cone_a, cone_b])
+                else:
+                    timing_end.extend([cone_a, cone_b])
             else:
-                timing_end.append(marker)
+                # Fallback: single marker at centroid if no gate endpoints
+                marker = {"bx": round(tbx, 3), "by": round(tby, 3),
+                          "type": det["type"], "size": 1, "source": "bar"}
+                if det["type"] == "timing_start":
+                    timing_start.append(marker)
+                else:
+                    timing_end.append(marker)
         else:
             # Text fallback: grab up to 2 nearest standing cones within radius_m.
             dists = sorted(
@@ -1061,7 +1128,8 @@ def run(pdf_path, page_idx, out_path,
         timing_end_cones=None,
         chalk_path=None,
         chalk_width_in=5.0,
-        invert_gates=False):
+        invert_start_gate=False,
+        invert_finish_gate=False):
 
     print(f"Opening {pdf_path} page {page_idx} ...", file=sys.stderr)
     doc  = fitz.open(pdf_path)
@@ -1251,6 +1319,8 @@ def run(pdf_path, page_idx, out_path,
                   file=sys.stderr)
     else:
         text_dets = detect_start_finish(page, drawings)
+        # Validate and correct timing light positions
+        text_dets = [_validate_timing_lights(d, m_per_pt) for d in text_dets]
         print(f"  Text detections: {text_dets}", file=sys.stderr)
         standing, timing_start, timing_end = tag_timing_cones(
             standing, text_dets, m_per_pt, cx_centroid, cy_centroid,
@@ -1274,25 +1344,54 @@ def run(pdf_path, page_idx, out_path,
     else:
         timing_start_gate = _gate_from_dets(text_dets, "timing_start")
         timing_end_gate   = _gate_from_dets(text_dets, "timing_end")
-        if invert_gates:
-            if timing_start_gate:
-                timing_start_gate = {"a": timing_start_gate["b"], "b": timing_start_gate["a"]}
-            if timing_end_gate:
-                timing_end_gate = {"a": timing_end_gate["b"], "b": timing_end_gate["a"]}
+        if invert_start_gate and timing_start_gate:
+            print(f"  Inverting start gate", file=sys.stderr)
+            timing_start_gate = {"a": timing_start_gate["b"], "b": timing_start_gate["a"]}
+        if invert_finish_gate and timing_end_gate:
+            print(f"  Inverting finish gate", file=sys.stderr)
+            timing_end_gate = {"a": timing_end_gate["b"], "b": timing_end_gate["a"]}
         if timing_start_gate:
             print(f"  Start gate: {timing_start_gate}", file=sys.stderr)
         if timing_end_gate:
             print(f"  Finish gate: {timing_end_gate}", file=sys.stderr)
 
-    # Stage position: lowest-numbered section-1 cones near the start gate
+    # Stage position: 100 GU away from centroid toward start gate
     stage_cone_pos = None
-    _start_det = next((d for d in text_dets if d["type"] == "timing_start"), None)
-    _gate_pdf_x = _start_det["pdf_x"] if _start_det else None
-    _gate_pdf_y = _start_det["pdf_y"] if _start_det else None
-    _stage_pdf = _detect_stage_position(page, _gate_pdf_x, _gate_pdf_y)
-    if _stage_pdf is not None:
-        sx, sy = pdf_to_blender(_stage_pdf[0], _stage_pdf[1], cx_centroid, cy_centroid, m_per_pt)
-        stage_cone_pos = [sx, sy]
+    _start_gate_pdf_x = None
+    _start_gate_pdf_y = None
+
+    if not (timing_start_cones or timing_end_cones):
+        # Get start gate from auto-detected gates
+        _start_det = next((d for d in text_dets if d["type"] == "timing_start"), None)
+        if _start_det:
+            _start_gate_pdf_x = _start_det["pdf_x"]
+            _start_gate_pdf_y = _start_det["pdf_y"]
+    else:
+        # Derive start gate from explicit timing cones (centroid of timing_start cones)
+        if timing_start:
+            ts_bxs = [c["bx"] for c in timing_start]
+            ts_bys = [c["by"] for c in timing_start]
+            ts_cx = sum(ts_bxs) / len(ts_bxs)
+            ts_cy = sum(ts_bys) / len(ts_bys)
+            # Convert back to PDF space for distance calculation
+            _start_gate_pdf_x = ts_cx / m_per_pt + cx_centroid
+            _start_gate_pdf_y = -(ts_cy / m_per_pt) + cy_centroid
+
+    if _start_gate_pdf_x is not None and _start_gate_pdf_y is not None:
+        # Direction from start gate toward centroid (into course)
+        dx = cx_centroid - _start_gate_pdf_x
+        dy = cy_centroid - _start_gate_pdf_y
+        dist = math.hypot(dx, dy)
+        if dist > 0:
+            # Position 100 GU (ft) before gate, opposite direction from course
+            norm_x = dx / dist
+            norm_y = dy / dist
+            stage_pdf_x = _start_gate_pdf_x - norm_x * 100.0  # 100 GU away from gate, opposite from course
+            stage_pdf_y = _start_gate_pdf_y - norm_y * 100.0
+            sx, sy = pdf_to_blender(stage_pdf_x, stage_pdf_y, cx_centroid, cy_centroid, m_per_pt)
+            stage_cone_pos = [sx, sy]
+            print(f"  Car start: 100pt before gate, away from course → ({sx:.2f}, {sy:.2f})m",
+                  file=sys.stderr)
 
     # --- Pointer orientation (tip_from_pdf angle, fallback toward nearest standing cone) ---
     assign_pointer_facing(pointers, standing)
@@ -1402,9 +1501,10 @@ def run(pdf_path, page_idx, out_path,
     if chalk_path:
         from detect_chalk_lines import extract_chalk_paths, render_chalk_mask
         chalk_paths = extract_chalk_paths(page)
-        # 1 pt = 1 ft at 72 DPI; convert inches → pixels
+        # Render full-page PNG in PDF page coordinates so UV mapping in Blender
+        # (which maps world coords back to full-page PDF coords) aligns correctly.
         line_px = max(1, round(chalk_width_in / 12.0))
-        chalk_img = render_chalk_mask(page, chalk_paths, line_width_px=line_px, dpi=72)
+        chalk_img = render_chalk_mask(page, chalk_paths, line_width_px=line_px, dpi=72, centered=False)
         chalk_img.save(chalk_path)
         print(f"  Chalk mask: {chalk_path} ({chalk_img.width}×{chalk_img.height} px, "
               f"{len(chalk_paths)} paths, line={chalk_width_in}\" → {line_px}px)",
@@ -1503,7 +1603,14 @@ def _render_preview(page, result, raw_standing, raw_pointer,
         draw.line([(ax, ay), (bx, by)], fill=color, width=max(3, int(4 * scale)))
 
         mx, my = (ax + bx) / 2, (ay + by) / 2
-        ix, iy = _interior_perp_px(ax, ay, bx, by, ref_px, ref_py)
+
+        # Calculate perpendicular and use a->b direction to determine which way arrow points
+        bdx, bdy = bx - ax, by - ay
+        blen = math.hypot(bdx, bdy) or 1.0
+        px1, py1 = -bdy / blen, bdx / blen
+
+        # Perpendicular points in direction of a->b vector
+        ix, iy = px1, py1
         dx, dy = (ix, iy) if toward_interior else (-ix, -iy)
 
         arrow_len = max(20, int(30 * scale))
@@ -1548,6 +1655,10 @@ def parse_args():
                    metavar="M",
                    help=f"Max anchor-pointer distance for snapping "
                         f"(default: {POINTER_SNAP_ANCHOR_RADIUS_M}m)")
+    p.add_argument("--invert-start-gate", action="store_true", default=False,
+                   help="Swap start gate endpoints (left ↔ right)")
+    p.add_argument("--invert-finish-gate", action="store_true", default=False,
+                   help="Swap finish gate endpoints (left ↔ right)")
     return p.parse_args()
 
 
@@ -1562,4 +1673,6 @@ if __name__ == "__main__":
         course_path=args.course,
         snap_pointers=args.snap_pointers,
         snap_radius_m=args.snap_radius,
+        invert_start_gate=args.invert_start_gate,
+        invert_finish_gate=args.invert_finish_gate,
     )

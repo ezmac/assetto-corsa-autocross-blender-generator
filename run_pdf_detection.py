@@ -26,6 +26,8 @@ Fields:
   skip               Set true to skip this entry without removing it.      [default: false]
   timing_start_cones List of cone numbers marking the start timing gates.  [optional]
   timing_end_cones   List of cone numbers marking the finish timing gates.  [optional]
+  invert_start_gate  Swap start gate endpoints (left ↔ right).             [default: false]
+  invert_finish_gate Swap finish gate endpoints (left ↔ right).            [default: false]
 
 Output layout:
   {out_dir}/solonats_{name}/
@@ -63,7 +65,8 @@ def process_job(job, out_dir: Path):
     snap_r     = float(job.get("snap_radius", POINTER_SNAP_ANCHOR_RADIUS_M))
     timing_start_cones = job.get("timing_start_cones")
     timing_end_cones   = job.get("timing_end_cones")
-    invert_gates       = bool(job.get("invert_gates", False))
+    invert_start_gate  = bool(job.get("invert_start_gate", False))
+    invert_finish_gate = bool(job.get("invert_finish_gate", False))
 
     job_dir = out_dir / f"solonats_{name}"
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +94,8 @@ def process_job(job, out_dir: Path):
         course_path=str(course_png) if course_png else None,
         timing_start_cones=timing_start_cones,
         timing_end_cones=timing_end_cones,
-        invert_gates=invert_gates,
+        invert_start_gate=invert_start_gate,
+        invert_finish_gate=invert_finish_gate,
         chalk_path=str(chalk_png),
         chalk_width_in=CHALK_WIDTH_IN,
     )

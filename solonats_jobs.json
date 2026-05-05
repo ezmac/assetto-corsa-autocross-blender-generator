@@ -24,6 +24,7 @@
     "notes":   "-6gu right, orange pedestrian walkway removed",
     "map":     true,
     "preview": true,
+    "corrected_json": "SoloNationals/manually_corrected/solonats_2010_west.json",
     "course":  true
   },
   {
@@ -33,6 +34,8 @@
     "notes":   "-6gu left",
     "map":     true,
     "preview": true,
+    "invert_finish_gate": true,
+    "invert_start_gate":true,
     "course":  true
   },
   {
@@ -41,7 +44,8 @@
     "name":    "2011_both",
     "map":     true,
     "preview": true,
-    "skip":    true
+    "skip":    true,
+    "corrected_json": "SoloNationals/overrides/solonats_2011_east.json"
   },
   {
     "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2011 Kevin Youngers, Andy Hollis/2011 East Cropped.pdf",
@@ -50,7 +54,10 @@
     "notes":   "S-N, -54gu bottom (removes grid boxes below Spectator-East)",
     "map":     true,
     "preview": true,
-    "course":  true
+    "course":  true,
+    "invert_start_gate": true,
+    "invert_finish_gate": true,
+    "corrected_json": "SoloNationals/overrides/solonats_2011_east.json"
   },
   {
     "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2011 Kevin Youngers, Andy Hollis/2011 West Cropped.pdf",
@@ -105,12 +112,13 @@
     "skip":    true
   },
   {
-    "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2013 Sam Strano, Elliott Speidell/2013 West Cropped.pdf",
+    "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2013 Sam Strano, Elliott Speidell/2013 West Cropped2.pdf",
     "page":    1,
     "name":    "2013_west",
-    "notes":   "-12gu top",
+    "notes":   "-12gu top, +9gu bottom",
     "map":     true,
     "preview": true,
+    "invert_start_gate": true,
     "course":  true
   },
   {
@@ -119,6 +127,7 @@
     "name":    "2013_east",
     "map":     true,
     "preview": true,
+    "invert_start_gate": true,
     "course":  true
   },
   {
@@ -136,6 +145,9 @@
     "notes":   "split from SET UP MAP at 31gu, -21gu bottom",
     "map":     true,
     "preview": true,
+    "corrected_json": "SoloNationals/manually_corrected/solonats_2014_west.json",
+    "invert_start_gate": true,
+    "invert_finish_gate": true,
     "course":  true
   },
   {
@@ -162,7 +174,8 @@
     "notes":   "split from combined at 35gu, -24gu top",
     "map":     true,
     "preview": true,
-    "course":  true
+    "course":  true,
+    "corrected_json": "SoloNationals/manually_corrected/solonats_2015_west.json"
   },
   {
     "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2015 Roger Johnson, Alex Jones/2015 East Split.pdf",
@@ -171,6 +184,7 @@
     "notes":   "split from combined at 35gu, -12gu top",
     "map":     true,
     "preview": true,
+    "invert_finish_gate": true,
     "course":  true
   },
   {
@@ -246,15 +260,17 @@
     "name":    "2018_west",
     "map":     true,
     "preview": true,
+    "invert_start_gate": true,
     "course":  true
   },
   {
     "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2018 Vivek Goel, Karen Babb/2018 East Cropped.pdf",
-    "page":    1,
+    "page":    3,
     "name":    "2018_east",
     "notes":   "-3gu left",
     "map":     true,
     "preview": true,
+    "invert_start_gate": true,
     "course":  true
   },
   {
@@ -275,7 +291,7 @@
   },
   {
     "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2019 Jason Frank, Michael Feldpusch/2019 West Cropped.pdf",
-    "page":    1,
+    "page":    2,
     "name":    "2019_west",
     "notes":   "-14gu top",
     "map":     true,
@@ -304,16 +320,17 @@
   },
   {
     "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2021 Dave Marcus, Kerry Coughlin/2021 West Cropped.pdf",
-    "page":    1,
+    "page":    2,
     "name":    "2021_west",
     "notes":   "-10gu top",
     "map":     true,
     "preview": true,
+    "invert_start_gate":true,
     "course":  true
   },
   {
     "pdf":     "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2021 Dave Marcus, Kerry Coughlin/2021 East Cropped.pdf",
-    "page":    1,
+    "page":    3,
     "name":    "2021_east",
     "notes":   "-11gu top",
     "map":     true,

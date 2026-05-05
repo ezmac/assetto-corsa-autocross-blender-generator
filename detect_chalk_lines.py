@@ -150,16 +150,36 @@ def extract_chalk_paths(page):
     return chalk_paths
 
 
-def render_chalk_mask(page, chalk_paths, line_width_px=1, dpi=72):
+def render_chalk_mask(page, chalk_paths, line_width_px=1, dpi=72, centered=False):
     """
     Render chalk paths as white lines on a black background.
     Canvas matches the PDF page at the given DPI (default 72 = 1px per pt).
+    If centered=True, paths are assumed to be in centroid-offset space and rendered accordingly.
     Returns a PIL Image (mode 'L').
     """
     pr    = page.rect
     scale = dpi / 72.0
-    w_px  = int(math.ceil(pr.width  * scale))
-    h_px  = int(math.ceil(pr.height * scale))
+
+    if centered:
+        # Paths are already centered on centroid; calculate canvas size from path bounds
+        if not chalk_paths or not chalk_paths[0]:
+            # Empty paths, create minimal image
+            img = Image.new("L", (1, 1), color=0)
+            return img
+        all_pts = [pt for path in chalk_paths for pt in path]
+        xs = [x for x, y in all_pts]
+        ys = [y for x, y in all_pts]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        w_px = int(math.ceil((xmax - xmin) * scale)) + 2
+        h_px = int(math.ceil((ymax - ymin) * scale)) + 2
+        offset_x = -xmin * scale + 1
+        offset_y = -ymin * scale + 1
+    else:
+        # Paths are in page coordinates
+        w_px  = int(math.ceil(pr.width  * scale))
+        h_px  = int(math.ceil(pr.height * scale))
+        offset_x = offset_y = 0
 
     img  = Image.new("L", (w_px, h_px), color=0)
     draw = ImageDraw.Draw(img)
@@ -167,7 +187,7 @@ def render_chalk_mask(page, chalk_paths, line_width_px=1, dpi=72):
     for path in chalk_paths:
         if len(path) < 2:
             continue
-        pixel_pts = [(x * scale, y * scale) for x, y in path]
+        pixel_pts = [(x * scale + offset_x, y * scale + offset_y) for x, y in path]
         draw.line(pixel_pts, fill=255, width=line_width_px, joint="curve")
 
     return img

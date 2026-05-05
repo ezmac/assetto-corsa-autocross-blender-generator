@@ -22,8 +22,10 @@ Options:
     --preview PATH      Save annotated detection image (image/pdf mode)
     --map PATH          Save clean map PNG at 72 DPI (pdf mode only)
     --out-json PATH     Where to save detected JSON (default: generated/<name>/debug/<name>.json)
-    --snap-pointers     Enable pointer snapping (pdf mode only, off by default)
-    --snap-radius M     Max snap distance in metres (pdf mode only)
+    --snap-pointers        Enable pointer snapping (pdf mode only, off by default)
+    --snap-radius M        Max snap distance in metres (pdf mode only)
+    --invert-start-gate    Swap start gate endpoints (pdf mode only)
+    --invert-finish-gate   Swap finish gate endpoints (pdf mode only)
 
 GCP overrides (image mode only — passed through to detect_cones.py):
     --gcp-left-img   X Y    --gcp-left-blender   BX BY
@@ -206,6 +208,31 @@ def setup_project(name, template_name):
                 os.rename(old_path, new_path)
                 print(f"FBX:          {os.path.relpath(old_path, dest_dir)} -> {name}{suffix}")
 
+    # ── Patch .fbx.ini: rename file and update internal FBX name references ──
+    # ksEditor stores shader assignments keyed by FBX filename. The template's
+    # .fbx.ini may reference an old FBX name that differs from both the template
+    # folder name and the new track name, so we detect it from the file content.
+    import re as _re
+    for root, _dirs, files in os.walk(dest_dir):
+        for f in files:
+            if not f.lower().endswith('.fbx.ini'):
+                continue
+            ini_path = os.path.join(root, f)
+            text = open(ini_path).read()
+            # Extract the old FBX basename from the first [model_FBX: <name>_...] line
+            m = _re.search(r'\[model_FBX: ([^\]_]+\.fbx)', text, _re.IGNORECASE)
+            old_fbx_name = m.group(1) if m else None
+            new_fbx_name = f"{name}.fbx"
+            if old_fbx_name:
+                text = _re.sub(_re.escape(old_fbx_name), new_fbx_name, text, flags=_re.IGNORECASE)
+            new_ini_path = os.path.join(root, f"{name}.fbx.ini")
+            with open(new_ini_path, 'w') as fh:
+                fh.write(text)
+            if new_ini_path != ini_path:
+                os.remove(ini_path)
+            print(f"FBX.INI:      {os.path.relpath(ini_path, dest_dir)} -> {name}.fbx.ini"
+                  + (f" (patched {old_fbx_name!r} -> {new_fbx_name!r})" if old_fbx_name else ""))
+
     return dest_dir, blend_dst
 
 
@@ -337,6 +364,10 @@ def _run_detection(args, out_json, debug_dir):
             extra.append('--snap-pointers')
         if args.snap_radius is not None:
             extra += ['--snap-radius', str(args.snap_radius)]
+        if args.invert_start_gate:
+            extra.append('--invert-start-gate')
+        if args.invert_finish_gate:
+            extra.append('--invert-finish-gate')
         preview  = args.preview or os.path.join(debug_dir, f'{args.name}_preview.png')
         map_path = args.map     or os.path.join(debug_dir, f'{args.name}_map.png')
         detect_cones_pdf(
@@ -396,6 +427,43 @@ def run_blender(blender_exe, blend_path, json_path, flat, fbx_path):
 SOLONATS_DETECT_DIR = os.path.join('generated', 'solonats')
 
 
+def _merge_corrected_json(corrected_path, auto_path, out_path):
+    """Write out_path = corrected JSON with page_w_pt/page_h_pt filled in from auto_path if absent."""
+    with open(corrected_path) as f:
+        data = json.load(f)
+    if os.path.isfile(auto_path):
+        with open(auto_path) as f:
+            auto = json.load(f)
+        t = data.setdefault('transform', {})
+        for key in ('page_w_pt', 'page_h_pt'):
+            if key not in t and key in auto.get('transform', {}):
+                t[key] = auto['transform'][key]
+    with open(out_path, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+def _regen_chalk_png(job, chalk_path):
+    """Regenerate chalk PNG from the original PDF using full-page rendering."""
+    pdf_path = job.get('pdf')
+    page_num = job.get('page', 1)
+    if not pdf_path or not os.path.isfile(pdf_path):
+        return False
+    try:
+        import fitz
+        from detect_chalk_lines import extract_chalk_paths, render_chalk_mask
+        doc = fitz.open(pdf_path)
+        page = doc[page_num - 1]
+        chalk_paths = extract_chalk_paths(page)
+        line_px = max(1, round(job.get('chalk_width', 5.0) / 12.0))
+        chalk_img = render_chalk_mask(page, chalk_paths, line_width_px=line_px, dpi=72, centered=False)
+        chalk_img.save(chalk_path)
+        print(f"  Chalk PNG: {chalk_path} ({chalk_img.width}×{chalk_img.height} px)")
+        return True
+    except Exception as e:
+        print(f"  WARNING: could not regenerate chalk PNG: {e}", file=sys.stderr)
+        return False
+
+
 def run_jobs(jobs_path, only_names, fbx, blender_exe, generated_dir=None):
     """Process a jobs JSON file, building each solonats track."""
     with open(jobs_path) as f:
@@ -415,11 +483,40 @@ def run_jobs(jobs_path, only_names, fbx, blender_exe, generated_dir=None):
         job_dir    = os.path.join(SOLONATS_DETECT_DIR, f'solonats_{name}')
         json_path  = os.path.join(job_dir, f'{name}.json')
 
+        # Check for corrected JSON override
+        if job.get('corrected_json'):
+            corrected_path = job['corrected_json']
+            if not os.path.isfile(corrected_path):
+                print(f"ERROR: {name}: corrected_json specified but file not found: {corrected_path}", file=sys.stderr)
+                errors += 1
+                continue
+            print(f"  Using corrected JSON: {corrected_path}")
+            # Merge page_w_pt/page_h_pt from auto-generated JSON if absent in corrected JSON,
+            # then regenerate chalk PNG so it aligns with the full-page UV mapping in Blender.
+            merged_path = os.path.join(job_dir, f'{name}_merged.json')
+            _merge_corrected_json(corrected_path, json_path, merged_path)
+            chalk_path = os.path.splitext(merged_path)[0] + '_chalk.png'
+            if not _regen_chalk_png(job, chalk_path):
+                # Fall back to copying any existing chalk PNG
+                existing = os.path.join(job_dir, f'{name}_chalk.png')
+                if os.path.isfile(existing):
+                    import shutil
+                    shutil.copy2(existing, chalk_path)
+            json_path = merged_path
+
         if not os.path.isfile(json_path):
             print(f"ERROR: {name}: detected JSON not found at {json_path} — "
                   f"run run_pdf_detection.py first", file=sys.stderr)
             errors += 1
             continue
+
+        # Regenerate chalk PNG if it doesn't exist or is stale, ensuring full-page alignment
+        chalk_path = os.path.splitext(json_path)[0] + '_chalk.png'
+        json_mtime = os.path.getmtime(json_path)
+        chalk_missing = not os.path.isfile(chalk_path)
+        chalk_stale = os.path.isfile(chalk_path) and os.path.getmtime(chalk_path) < json_mtime
+        if chalk_missing or chalk_stale:
+            _regen_chalk_png(job, chalk_path)
 
         print(f"\n{'='*65}")
         print(f"  Track: {track_name}")
@@ -517,6 +614,10 @@ def main():
                    help='Enable pointer snapping (pdf mode only, off by default)')
     p.add_argument('--snap-radius', type=float, default=None, metavar='M',
                    help='Max snap distance in metres (pdf mode only)')
+    p.add_argument('--invert-start-gate', action='store_true', default=False,
+                   help='Swap start gate endpoints (pdf mode only)')
+    p.add_argument('--invert-finish-gate', action='store_true', default=False,
+                   help='Swap finish gate endpoints (pdf mode only)')
     # GCP overrides (image mode only)
     p.add_argument('--gcp-left-img',      nargs=2, type=float, default=None)
     p.add_argument('--gcp-left-blender',  nargs=2, type=float, default=None)
@@ -602,14 +703,50 @@ def main():
     if not os.path.isfile(json_path):
         sys.exit(f"ERROR: JSON not found: {json_path}")
 
+    # Regenerate chalk PNG from PDF source to ensure full-page alignment.
+    # This is needed because chalk was previously rendered with tight crop (centered=True).
+    chalk_path = os.path.splitext(json_path)[0] + '_chalk.png'
+    import re
+    name_match = re.search(r'solonats_(\d{4}[_a-z]*)', json_path)
+    if name_match:
+        name_base = name_match.group(1)
+        if os.path.isfile('solonats_jobs.json'):
+            with open('solonats_jobs.json') as f:
+                jobs_data = json.load(f)
+            for job in jobs_data:
+                if job.get('name') == name_base:
+                    if job.get('pdf'):
+                        _regen_chalk_png(job, chalk_path)
+                    break
+
     update_track_info(dest_dir, args.name, json_path)
 
     # ── Step 3: Place cones via Blender ──────────────────────────────────────
+    # For --no-template builds, always export FBX: create_flat_template.py exports
+    # one before placement, but it lacks cone placement and chalk UVs.
     fbx_path = None
-    if args.fbx:
+    if args.fbx or args.no_template:
         fbx_path = os.path.join(dest_dir, 'blender', f'{args.name}.fbx')
 
     run_blender(blender_exe, blend_path, json_path, flat, fbx_path)
+
+    # ── Patch .fbx.ini ROAD txDiffuse to chalk DDS (flat/no-template only) ───
+    if args.no_template:
+        _chalk_base   = os.path.splitext(os.path.basename(json_path))[0]
+        _chalk_dds    = _chalk_base + '_chalk.dds'
+        _fbx_ini_path = os.path.join(dest_dir, 'blender', f'{args.name}.fbx.ini')
+        if os.path.isfile(_fbx_ini_path):
+            _ini_text = open(_fbx_ini_path).read()
+            # Replace txDiffuse for the ROAD material only (it's between [MATERIAL_0] and [MATERIAL_1])
+            _road_block_end = _ini_text.find('[MATERIAL_1]')
+            if _road_block_end == -1:
+                _road_block_end = len(_ini_text)
+            _road_block = _ini_text[:_road_block_end]
+            _rest       = _ini_text[_road_block_end:]
+            _road_block = re.sub(r'(RES_0_TEXTURE=).*', rf'\g<1>{_chalk_dds}', _road_block)
+            with open(_fbx_ini_path, 'w') as _f:
+                _f.write(_road_block + _rest)
+            print(f"FBX.INI: patched ROAD txDiffuse → {_chalk_dds}")
 
     # ── Done ──────────────────────────────────────────────────────────────────
     print(f"\n{'='*65}")
