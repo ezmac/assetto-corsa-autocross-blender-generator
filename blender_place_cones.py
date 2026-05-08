@@ -93,8 +93,28 @@ if FLAT:
         # Page center in world space: ox + page_w/2*scale, oy - page_h/2*scale
         road_cx  = _ox + req_w / 2
         road_cy  = _oy - req_h / 2
+        # Expand road if stage + spawn buffer falls outside the page extents.
+        # UV mapping is world-position-based so expanding beyond the page is safe.
+        if stage_cone_pos:
+            _stage_pad = SPAWN_BACK_FROM_STAGE_M + 5.0
+            _need_w = (abs(stage_cone_pos[0] - road_cx) + _stage_pad) * 2
+            _need_h = (abs(stage_cone_pos[1] - road_cy) + _stage_pad) * 2
+            if _need_w > req_w or _need_h > req_h:
+                req_w = max(req_w, _need_w)
+                req_h = max(req_h, _need_h)
+                print(f"  Expanded road to cover stage area: {req_w:.0f}m x {req_h:.0f}m")
     else:
         PADDING  = 30.0
+        # Expand bounds to include stage cone + spawn buffer before sizing the road.
+        if stage_cone_pos:
+            _stage_pad = SPAWN_BACK_FROM_STAGE_M + 5.0
+            b = dict(b)
+            b['xmin'] = min(b['xmin'], stage_cone_pos[0] - _stage_pad)
+            b['xmax'] = max(b['xmax'], stage_cone_pos[0] + _stage_pad)
+            b['ymin'] = min(b['ymin'], stage_cone_pos[1] - _stage_pad)
+            b['ymax'] = max(b['ymax'], stage_cone_pos[1] + _stage_pad)
+            cx = (b['xmin'] + b['xmax']) / 2
+            cy = (b['ymin'] + b['ymax']) / 2
         req_w    = (b['xmax'] - b['xmin']) + 2 * PADDING
         req_h    = (b['ymax'] - b['ymin']) + 2 * PADDING
         road_cx  = cx
@@ -380,14 +400,15 @@ if has_start_gate and has_finish_gate:
     place_marker('AC_AB_FINISH_L', rL.x, rL.y)
     place_marker('AC_AB_FINISH_R', rR.x, rR.y)
 
+    z_rot = math.atan2(entry.x, entry.y)
+    rot   = (-math.pi/2, 0.0, z_rot)
     if stage_cone_pos:
         spawn_x = stage_cone_pos[0] - entry.x * SPAWN_BACK_FROM_STAGE_M
         spawn_y = stage_cone_pos[1] - entry.y * SPAWN_BACK_FROM_STAGE_M
+        print(f"  Spawn at stage_cone_pos ({stage_cone_pos[0]:.1f},{stage_cone_pos[1]:.1f})")
     else:
         spawn_x = g_mid.x - entry.x * SPAWN_BACK_M
         spawn_y = g_mid.y - entry.y * SPAWN_BACK_M
-    z_rot = math.atan2(entry.x, entry.y)
-    rot   = (-math.pi/2, 0.0, z_rot)
     for n in ('AC_PIT_0', 'AC_START_0', 'AC_HOTLAP_START_0'):
         place_marker(n, spawn_x, spawn_y, z_offset=1.5, rot=rot)
 
@@ -405,18 +426,34 @@ elif has_start_gate:
     perp2 = -perp1
     entry = perp1 if perp1.y < 0 else perp2
     rz    = math.atan2(entry.x, entry.y)
+    rot   = (-math.pi/2, 0, rz)
 
-    for mname, lat in (('AC_PIT_0', 0), ('AC_START_0', -3), ('AC_HOTLAP_START_0', 3)):
-        place_marker(mname,
-                     g_mid.x + gate_vec.x * lat - entry.x * SPAWN_BACK_M,
-                     g_mid.y + gate_vec.y * lat - entry.y * SPAWN_BACK_M,
-                     z_offset=1.5, rot=(-math.pi/2, 0, rz))
+    if stage_cone_pos:
+        spawn_x = stage_cone_pos[0] - entry.x * SPAWN_BACK_FROM_STAGE_M
+        spawn_y = stage_cone_pos[1] - entry.y * SPAWN_BACK_FROM_STAGE_M
+        print(f"  Spawn at stage_cone_pos ({stage_cone_pos[0]:.1f},{stage_cone_pos[1]:.1f})")
+    else:
+        spawn_x = g_mid.x - entry.x * SPAWN_BACK_M
+        spawn_y = g_mid.y - entry.y * SPAWN_BACK_M
+    for n in ('AC_PIT_0', 'AC_START_0', 'AC_HOTLAP_START_0'):
+        place_marker(n, spawn_x, spawn_y, z_offset=1.5, rot=rot)
     place_marker('AC_AB_START_L', g0.x, g0.y)
     place_marker('AC_AB_START_R', g1.x, g1.y)
-    print("Start gate + spawn markers placed (no end gate)")
+    print(f"Start gate + spawn markers placed (no end gate)  heading={math.degrees(rz):.1f}°")
 
 else:
-    print("No timing markers (no gate data in JSON)")
+    if stage_cone_pos:
+        # No timing gates but we have a staging area — point spawn toward course centroid.
+        from mathutils import Vector
+        to_cx   = Vector((cx - stage_cone_pos[0], cy - stage_cone_pos[1], 0)).normalized()
+        rz      = math.atan2(to_cx.x, to_cx.y)
+        spawn_x = stage_cone_pos[0] - to_cx.x * SPAWN_BACK_FROM_STAGE_M
+        spawn_y = stage_cone_pos[1] - to_cx.y * SPAWN_BACK_FROM_STAGE_M
+        for n in ('AC_PIT_0', 'AC_START_0', 'AC_HOTLAP_START_0'):
+            place_marker(n, spawn_x, spawn_y, z_offset=1.5, rot=(-math.pi/2, 0, rz))
+        print(f"  Spawn at stage_cone_pos (no gates)  heading={math.degrees(rz):.1f}°")
+    else:
+        print("No timing markers (no gate data in JSON)")
 
 # ── Fix AC markers: Null material + hide_render ───────────────────────────────
 null_mat = bpy.data.materials.get('Null')
@@ -532,6 +569,13 @@ if FBX_PATH:
         if _img.filepath:
             _img.filepath = os.path.abspath(bpy.path.abspath(_img.filepath))
 
+    # Temporarily unlink the cone template so it is excluded from the FBX.
+    # Re-link afterwards so the .blend stays valid for future runs.
+    _tmpl_obj = bpy.data.objects.get('AC_POBJECT_MovableCone')
+    _tmpl_cols = list(_tmpl_obj.users_collection) if _tmpl_obj else []
+    for _c in _tmpl_cols:
+        _c.objects.unlink(_tmpl_obj)
+
     _fbx_abs = os.path.abspath(FBX_PATH)
     bpy.ops.export_scene.fbx(
         filepath=_fbx_abs,
@@ -542,6 +586,9 @@ if FBX_PATH:
         embed_textures=False,
     )
     print(f"FBX exported: {FBX_PATH}")
+
+    for _c in _tmpl_cols:
+        _c.objects.link(_tmpl_obj)
 
 # ── Restore Windows-relative image paths before saving .blend ─────────────────
 # Only touch images with absolute paths; relative paths (starting //) are already correct.

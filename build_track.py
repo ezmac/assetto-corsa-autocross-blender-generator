@@ -54,6 +54,7 @@ import re
 import json
 import glob
 import subprocess
+import math
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -245,7 +246,7 @@ def update_track_info(dest_dir, name, json_path):
     pointers = data.get('pointers', [])
 
     if 'bounds' in data:
-        b = data['bounds']
+        b = dict(data['bounds'])
     else:
         all_pts = standing + pointers + data.get('timing_start', []) + data.get('timing_end', [])
         b = {
@@ -254,6 +255,13 @@ def update_track_info(dest_dir, name, json_path):
             'ymin': min(c['by'] for c in all_pts),
             'ymax': max(c['by'] for c in all_pts),
         }
+
+    stage = data.get('stage_cone_pos')
+    if stage:
+        b['xmin'] = min(b['xmin'], stage[0])
+        b['xmax'] = max(b['xmax'], stage[0])
+        b['ymin'] = min(b['ymin'], stage[1])
+        b['ymax'] = max(b['ymax'], stage[1])
 
     lot_w = b['xmax'] - b['xmin']
     lot_h = b['ymax'] - b['ymin']
@@ -427,17 +435,95 @@ def run_blender(blender_exe, blend_path, json_path, flat, fbx_path):
 SOLONATS_DETECT_DIR = os.path.join('generated', 'solonats')
 
 
+def _convert_editor_json(editor_data, auto_data):
+    """Convert editor project.json format {cones, scale, siteW, siteH} to pipeline format."""
+    t = auto_data.get('transform', {})
+    scale = t.get('scale', editor_data.get('scale', 0.3048))
+    ox    = t.get('ox', 0.0)
+    oy    = t.get('oy', 0.0)
+
+    def to_blender(x, y):
+        return round(x * scale + ox, 3), round(-y * scale + oy, 3)
+
+    standing, pointers, timing_start, timing_end, stage_cones = [], [], [], [], []
+    for cone in editor_data.get('cones', []):
+        if cone.get('noExport'):
+            continue
+        ct = cone.get('coneType', 'standing')
+        bx, by = to_blender(cone['x'], cone['y'])
+        entry = {'bx': bx, 'by': by, 'type': ct, 'size': 1}
+        if ct == 'standing':
+            standing.append(entry)
+        elif ct == 'pointer':
+            # Editor rotation is CCW in screen (y-down) space; negate to get Blender facing_deg.
+            entry['facing_deg'] = round(math.degrees(-cone.get('rotation', 0)), 1)
+            pointers.append(entry)
+        elif ct == 'timing_start':
+            timing_start.append(entry)
+        elif ct == 'timing_end':
+            timing_end.append(entry)
+        elif ct == 'car_start':
+            stage_cones.append([bx, by])
+
+    if stage_cones:
+        stage_cone_pos = [
+            round(sum(c[0] for c in stage_cones) / len(stage_cones), 3),
+            round(sum(c[1] for c in stage_cones) / len(stage_cones), 3),
+        ]
+    else:
+        stage_cone_pos = auto_data.get('stage_cone_pos')
+
+    all_pts = standing + pointers + timing_start + timing_end
+    if all_pts:
+        bounds = {
+            'xmin': min(c['bx'] for c in all_pts),
+            'xmax': max(c['bx'] for c in all_pts),
+            'ymin': min(c['by'] for c in all_pts),
+            'ymax': max(c['by'] for c in all_pts),
+        }
+    else:
+        bounds = auto_data.get('bounds')
+
+    # Fill page dimensions into transform from auto JSON if absent
+    for key in ('page_w_pt', 'page_h_pt'):
+        if key not in t and key in auto_data.get('transform', {}):
+            t[key] = auto_data['transform'][key]
+
+    return {
+        'transform':        t,
+        'bounds':           bounds,
+        'standing':         standing,
+        'pointers':         pointers,
+        'timing_start':     timing_start,
+        'timing_end':       timing_end,
+        'timing_start_gate': auto_data.get('timing_start_gate'),
+        'timing_end_gate':   auto_data.get('timing_end_gate'),
+        'stage_cone_pos':   stage_cone_pos,
+        'gcp':              auto_data.get('gcp', []),
+        'n_standing':       len(standing),
+        'n_pointer':        len(pointers),
+        'n_timing_start':   len(timing_start),
+        'n_timing_end':     len(timing_end),
+    }
+
+
 def _merge_corrected_json(corrected_path, auto_path, out_path):
-    """Write out_path = corrected JSON with page_w_pt/page_h_pt filled in from auto_path if absent."""
+    """Write out_path = corrected JSON converted to pipeline format, with transform from auto_path."""
     with open(corrected_path) as f:
         data = json.load(f)
+    auto = {}
     if os.path.isfile(auto_path):
         with open(auto_path) as f:
             auto = json.load(f)
+
+    if 'cones' in data and 'standing' not in data:
+        data = _convert_editor_json(data, auto)
+    else:
         t = data.setdefault('transform', {})
         for key in ('page_w_pt', 'page_h_pt'):
             if key not in t and key in auto.get('transform', {}):
                 t[key] = auto['transform'][key]
+
     with open(out_path, 'w') as f:
         json.dump(data, f, indent=2)
 
@@ -462,6 +548,34 @@ def _regen_chalk_png(job, chalk_path):
     except Exception as e:
         print(f"  WARNING: could not regenerate chalk PNG: {e}", file=sys.stderr)
         return False
+
+
+def _patch_solonats_metadata(dest_dir, track_name, designers, map_image_path):
+    """Append designer credit and ezmac note to description; set ui/preview.png to the map image."""
+    ui_path = os.path.join(dest_dir, track_name, 'ui', 'ui_track.json')
+    if not os.path.isfile(ui_path):
+        print(f"WARNING: ui_track.json not found at {ui_path}")
+        return
+
+    with open(ui_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    def _append(m):
+        existing = m.group(1)
+        suffix = (f' Designed by {designers}.' if designers else '') + ' Generated by ezmac.'
+        return f'"description": "{existing}{suffix}"'
+
+    updated = re.sub(r'"description"\s*:\s*"([^"]*)"', _append, content)
+    with open(ui_path, 'w', encoding='utf-8') as f:
+        f.write(updated)
+    print(f"ui_track.json: appended credit (designers={designers!r})")
+
+    if map_image_path and os.path.isfile(map_image_path):
+        preview_path = os.path.join(dest_dir, track_name, 'ui', 'preview.png')
+        shutil.copy2(map_image_path, preview_path)
+        print(f"ui/preview.png <- {os.path.basename(map_image_path)}")
+    else:
+        print(f"WARNING: map image not found, preview.png not updated ({map_image_path})")
 
 
 def run_jobs(jobs_path, only_names, fbx, blender_exe, generated_dir=None):
@@ -539,14 +653,27 @@ def run_jobs(jobs_path, only_names, fbx, blender_exe, generated_dir=None):
 
         old_argv = sys.argv
         sys.argv = argv
+        failed = False
         try:
             main()
         except SystemExit as e:
             if e.code and e.code != 0:
                 print(f"ERROR building {track_name}: exit {e.code}", file=sys.stderr)
                 errors += 1
+                failed = True
         finally:
             sys.argv = old_argv
+
+        if not failed:
+            # Extract designers from the PDF parent folder (e.g. "2009 Chris Cox, Michael Feldpusch")
+            pdf_path = job.get('pdf', '')
+            designers = ''
+            if pdf_path:
+                folder = os.path.basename(os.path.dirname(pdf_path))
+                designers = re.sub(r'^\d{4}\s+', '', folder)
+            map_image = os.path.join(job_dir, f'{name}_map.png')
+            track_dest = os.path.join(generated_dir or GENERATED_DIR, track_name)
+            _patch_solonats_metadata(track_dest, track_name, designers, map_image)
 
     if errors:
         sys.exit(f"{errors} job(s) failed")
