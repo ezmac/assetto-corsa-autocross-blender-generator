@@ -19,7 +19,8 @@ Usage:
         --page 2 \\
         --out  west_2018.json \\
         [--preview west_2018.png] \\
-        [--no-snap-pointers]
+        [--snap-pointers] \\
+        [--invert-start-gate] [--invert-finish-gate]
 """
 
 import sys
@@ -47,6 +48,7 @@ DARK_THRESHOLD  = 0.35   # fill RGB channels must all be below this (0–1)
 MIN_CONE_AREA   = 5.0    # pt²  — filter noise / stray dots
 MAX_CONE_AREA   = 200.0  # pt²  — filter large course-boundary shapes
 MAX_ASPECT      = 4.0    # max(w/h, h/w) for a cone bounding box
+PAGE_MARGIN_PT  = 20.0   # pt  — discard candidates within this margin of any page edge
 
 # Course-outline texture generation
 COURSE_LINE_PX_PER_M = 4.0    # texture resolution (4 px/m ≈ 0.25 m/px)
@@ -164,29 +166,32 @@ def get_all_vertices(items):
 
 
 def compute_tip_angle(verts, cx, cy):
-    """Angle (degrees CCW from +X, Blender coords) from centroid to triangle tip.
+    """Angle (degrees CCW from +X, Blender coords) of the pointer's tip direction.
 
-    The 'tip' is the vertex farthest from the centroid (sharpest point).
+    The vertex centroid of an arrow/triangle shape is biased toward the base
+    (more vertices live there).  The tip is therefore the vertex farthest from
+    the vertex centroid, which is perpendicular to the base for symmetric shapes
+    and sensibly interpolated for asymmetric ones.
+
     Y is negated because pymupdf uses y-down but Blender uses y-up.
     """
-    if not verts:
+    if not verts or len(verts) < 3:
         return None
-    best_d2 = -1.0
-    tip = verts[0]
-    for v in verts:
-        d2 = (v[0] - cx) ** 2 + (v[1] - cy) ** 2
-        if d2 > best_d2:
-            best_d2 = d2
-            tip = v
-    dx = tip[0] - cx
-    dy = tip[1] - cy
-    return round(math.degrees(math.atan2(-dy, dx)), 1)   # flip Y
+
+    vx = sum(v[0] for v in verts) / len(verts)
+    vy = sum(v[1] for v in verts) / len(verts)
+
+    tip = max(verts, key=lambda v: (v[0] - vx) ** 2 + (v[1] - vy) ** 2)
+    dx = tip[0] - vx
+    dy = tip[1] - vy
+    return round(math.degrees(math.atan2(-dy, dx)), 1)   # flip Y for Blender
 
 
 def classify_candidate(d):
     """Classify one candidate drawing.
 
-    Returns ('standing'|'pointer', cx, cy, tip_angle_or_None) or None to skip.
+    Returns ('standing'|'pointer', cx, cy, tip_angle_or_None, area_pt2, n_line) or None.
+    area_pt2 is the bounding-box area; n_line is used for the line-count dominance filter.
     """
     fill = d.get("fill")
     if not is_dark(fill):
@@ -227,7 +232,7 @@ def classify_candidate(d):
             return None
         cx = sum(bxs) / len(bxs)
         cy = sum(bys) / len(bys)
-        return "standing", cx, cy, None
+        return "standing", cx, cy, None, b_area, 0
 
     # Non-circle shapes: use full bounding box for filtering.
     area   = w * h
@@ -244,7 +249,7 @@ def classify_candidate(d):
         # Closed line-segment polygon (triangle = 3, arrow = 8) → pointer cone.
         verts = get_all_vertices(items)
         tip_angle = compute_tip_angle(verts, cx, cy)
-        return "pointer", cx, cy, tip_angle
+        return "pointer", cx, cy, tip_angle, area, n_line
 
     if n_line == 2:
         # Some Illustrator PDFs export pointer triangles as two nl=2 sub-paths
@@ -257,12 +262,13 @@ def classify_candidate(d):
             tri_area = abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) / 2.0
             if tri_area >= MIN_CONE_AREA / 3.0:
                 tip_angle = compute_tip_angle(verts, cx, cy)
-                return "pointer", cx, cy, tip_angle
+                return "pointer", cx, cy, tip_angle, area, n_line
 
-    if n_rect >= 1:
-        # Rectangle item — a filled-rect pointer symbol.
-        # No tip angle derivable from shape alone; assign_pointer_facing will handle it.
-        return "pointer", cx, cy, None
+    if n_rect >= 1 and n_line >= 1:
+        # Rectangle combined with line segments — some PDFs encode the pointer base
+        # as a rect + attached lines.  Bare rectangles with no lines are border
+        # markers or scale-bar elements, not cone symbols.
+        return "pointer", cx, cy, None, area, n_line
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +408,60 @@ def render_course_texture(segments, bounds):
 # Text-glyph false-positive filter
 # ---------------------------------------------------------------------------
 
+def has_outlined_text(page, drawings, match_radius_factor=0.8, min_matches=5):
+    """Return True if this page has text rendered as outlined vector paths.
+
+    In some Illustrator PDFs, text is exported as outlined (filled) paths rather
+    than as a live text stream.  Circular characters ('0', 'O', 'o') then appear
+    in the drawings list and can be misclassified as standing cones.
+
+    Detection heuristic: check how many dark circles in the drawings list have a
+    circular character ('0', 'O', 'o') in the text stream within match_radius_factor
+    × font_size.  If fewer than min_matches, the text is not outlined and the
+    glyph filter should be skipped to avoid falsely removing real cone circles that
+    happen to sit near numeric cone labels.
+    """
+    DARK = 0.35
+    circle_positions = []
+    for d in drawings:
+        fill = d.get("fill")
+        if fill is None or not all(c < DARK for c in fill[:3]):
+            continue
+        items = d.get("items", [])
+        if sum(1 for it in items if it[0] == "c") < 2:
+            continue
+        rect = d["rect"]
+        circle_positions.append(((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2))
+
+    if not circle_positions:
+        return False
+
+    try:
+        text_chars = []
+        for block in page.get_text("rawdict").get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    sz = span.get("size", 0)
+                    for ch in span.get("chars", []):
+                        if ch.get("c", "") in "0Oo":
+                            orig = ch.get("origin", (0, 0))
+                            text_chars.append((orig[0], orig[1], sz))
+    except Exception:
+        return False
+
+    if not text_chars:
+        return False
+
+    matches = 0
+    for cx, cy in circle_positions:
+        for px, py, sz in text_chars:
+            if math.hypot(cx - px, cy - py) < sz * match_radius_factor:
+                matches += 1
+                break
+
+    return matches >= min_matches
+
+
 def get_text_bboxes(page, pad=2.0):
     """Return list of (x0,y0,x1,y1) bounding boxes for every text span.
 
@@ -456,25 +516,74 @@ _FINISH_BAR_B_MAX = 0.85   # blue  channel maximum
 
 # Bars are large compared to cones — min area in pt²
 _BAR_MIN_AREA = 500.0
+# A timing bar is thin in one direction (it's a stripe, not a rectangle).
+# Reject filled shapes where BOTH dimensions exceed this — those are background fills.
+_BAR_MAX_MIN_DIM = 20.0   # pt — if min(width,height) > this, it's not a bar
 
 
-def _is_start_bar_color(fill):
-    """Return True if fill (r, g, b floats 0–1) looks like the green start bar."""
-    if fill is None:
+def _is_start_bar_color(rgb):
+    """Return True if rgb (r, g, b floats 0–1) looks like the green start bar."""
+    if rgb is None:
         return False
-    r, g, b = fill[0], fill[1], fill[2]
+    r, g, b = rgb[0], rgb[1], rgb[2]
     return (g >= _START_BAR_G_MIN and g > r and g > b
             and r <= _START_BAR_R_MAX and b <= _START_BAR_B_MAX)
 
 
-def _is_finish_bar_color(fill):
-    """Return True if fill looks like the red/pink finish bar."""
-    if fill is None:
+def _is_finish_bar_color(rgb):
+    """Return True if rgb looks like the red/pink finish bar."""
+    if rgb is None:
         return False
-    r, g, b = fill[0], fill[1], fill[2]
+    r, g, b = rgb[0], rgb[1], rgb[2]
     return (r >= _FINISH_BAR_R_MIN and r > b
             and g <= _FINISH_BAR_G_MAX and b <= _FINISH_BAR_B_MAX
             and r > g + 0.05)
+
+
+def _extract_stroke_bar_endpoints(drawings):
+    """Find colored stroke bars (green/red lines) and return their endpoints.
+
+    Returns (start_endpoints, finish_endpoints) where each is either
+    ((x0,y0), (x1,y1)) or None.  Bars are colored STROKE paths (fill=None)
+    with a single line item — the two endpoints are the LEFT/RIGHT marker positions.
+    """
+    best_start  = None   # (area/length, (x0,y0), (x1,y1))
+    best_finish = None
+
+    for d in drawings:
+        color = d.get("color")
+        if color is None:
+            continue
+        if d.get("fill") is not None:
+            continue   # skip filled shapes — we want strokes only
+
+        items = d.get("items", [])
+        # Collect all line endpoints; each 'l' item = (type, p1, p2)
+        pts = []
+        for it in items:
+            if it[0] == "l":
+                pts.append((it[1].x, it[1].y))
+                pts.append((it[2].x, it[2].y))
+
+        if len(pts) < 2:
+            continue
+
+        x0, y0 = pts[0]
+        x1, y1 = pts[-1]
+        length  = math.hypot(x1 - x0, y1 - y0)
+        if length < 20:   # too short to be a timing bar
+            continue
+
+        if _is_start_bar_color(color):
+            if best_start is None or length > best_start[0]:
+                best_start = (length, (x0, y0), (x1, y1))
+        elif _is_finish_bar_color(color):
+            if best_finish is None or length > best_finish[0]:
+                best_finish = (length, (x0, y0), (x1, y1))
+
+    se = (best_start[1],  best_start[2])  if best_start  else None
+    fe = (best_finish[1], best_finish[2]) if best_finish else None
+    return se, fe
 
 
 def detect_start_finish(page, drawings):
@@ -483,50 +592,19 @@ def detect_start_finish(page, drawings):
     `drawings` must be pre-filtered to the page's visible rect.
 
     Detection order (first match wins per type):
-      1. Colored bars: green-filled shape → timing_start,
-                       red/pink-filled shape → timing_end.
-      2. Colored text fallback: green "Start" text, red "Finish" text.
+      1. Colored text labels: green "Start", red "Finish".
+      2. Colored bar strokes: green/red stroke paths — endpoints stored as gate.
+      3. Colored bar fills: green/red filled shapes — center only, no gate.
     """
     results = []
+    has_start  = False
+    has_finish = False
 
-    # --- 1. Colored bar shapes: keep only the largest per type ---
-    # `drawings` is pre-filtered to the page's visible rect by the caller.
-    best_start  = None   # (area, cx, cy)
-    best_finish = None
-    for d in drawings:
-        fill = d.get("fill")
-        if fill is None:
-            continue
-        rect = d.get("rect")
-        if rect is None:
-            continue
-        area = (rect.x1 - rect.x0) * (rect.y1 - rect.y0)
-        if area < _BAR_MIN_AREA:
-            continue
-        cx = (rect.x0 + rect.x1) / 2
-        cy = (rect.y0 + rect.y1) / 2
-        if _is_start_bar_color(fill):
-            if best_start is None or area > best_start[0]:
-                best_start = (area, cx, cy)
-        elif _is_finish_bar_color(fill):
-            if best_finish is None or area > best_finish[0]:
-                best_finish = (area, cx, cy)
-
-    if best_start:
-        results.append({"type": "timing_start", "pdf_x": best_start[1], "pdf_y": best_start[2], "source": "bar"})
-    if best_finish:
-        results.append({"type": "timing_end", "pdf_x": best_finish[1], "pdf_y": best_finish[2], "source": "bar"})
-
-    # --- 2. Text fallback (only if bars didn't find both) ---
-    has_start  = any(r["type"] == "timing_start" for r in results)
-    has_finish = any(r["type"] == "timing_end"   for r in results)
-    if has_start and has_finish:
-        return results
-
+    # --- 1. Colored text labels: "Start" (green) and "Finish" (red) ---
     try:
         text_dict = page.get_text("dict")
     except Exception:
-        return results
+        text_dict = {"blocks": []}
 
     for block in text_dict.get("blocks", []):
         for line in block.get("lines", []):
@@ -543,7 +621,7 @@ def detect_start_finish(page, drawings):
 
                 is_start  = "start"  in text.lower()
                 is_finish = "finish" in text.lower()
-                is_green  = g > 100 and r < 100 and b < 100
+                is_green  = g > 100 and g > r and g > b
                 is_red    = r > 150 and g < 100 and b < 100
 
                 if is_start and is_green and not has_start:
@@ -553,7 +631,258 @@ def detect_start_finish(page, drawings):
                     results.append({"type": "timing_end", "pdf_x": px, "pdf_y": py, "source": "text"})
                     has_finish = True
 
+    # --- 2. Colored bar strokes: extract endpoints as gate left/right ---
+    stroke_start_ep, stroke_finish_ep = _extract_stroke_bar_endpoints(drawings)
+
+    if stroke_start_ep and not has_start:
+        (x0, y0), (x1, y1) = stroke_start_ep
+        cx = (x0 + x1) / 2
+        cy = (y0 + y1) / 2
+        results.append({"type": "timing_start", "pdf_x": cx, "pdf_y": cy,
+                        "source": "bar",
+                        "gate_a": (x0, y0), "gate_b": (x1, y1)})
+        has_start = True
+        print(f"  Start stroke bar endpoints: ({x0:.1f},{y0:.1f}) → ({x1:.1f},{y1:.1f})",
+              file=sys.stderr)
+    elif stroke_start_ep:
+        # Text already found start — attach bar endpoints only if bar is near text label
+        (x0, y0), (x1, y1) = stroke_start_ep
+        bar_cx, bar_cy = (x0 + x1) / 2, (y0 + y1) / 2
+        for r in results:
+            if r["type"] == "timing_start":
+                dist = math.hypot(bar_cx - r["pdf_x"], bar_cy - r["pdf_y"])
+                if dist < 200:
+                    r["gate_a"] = stroke_start_ep[0]
+                    r["gate_b"] = stroke_start_ep[1]
+                else:
+                    print(f"  Start bar at ({bar_cx:.0f},{bar_cy:.0f}) is {dist:.0f}pt from "
+                          f"text label — ignoring bar endpoints", file=sys.stderr)
+                break
+
+    if stroke_finish_ep and not has_finish:
+        (x0, y0), (x1, y1) = stroke_finish_ep
+        cx = (x0 + x1) / 2
+        cy = (y0 + y1) / 2
+        results.append({"type": "timing_end", "pdf_x": cx, "pdf_y": cy,
+                        "source": "bar",
+                        "gate_a": (x0, y0), "gate_b": (x1, y1)})
+        has_finish = True
+        print(f"  Finish stroke bar endpoints: ({x0:.1f},{y0:.1f}) → ({x1:.1f},{y1:.1f})",
+              file=sys.stderr)
+    elif stroke_finish_ep:
+        # Text already found finish — attach bar endpoints only if bar is near text label
+        (x0, y0), (x1, y1) = stroke_finish_ep
+        bar_cx, bar_cy = (x0 + x1) / 2, (y0 + y1) / 2
+        for r in results:
+            if r["type"] == "timing_end":
+                dist = math.hypot(bar_cx - r["pdf_x"], bar_cy - r["pdf_y"])
+                if dist < 200:
+                    r["gate_a"] = stroke_finish_ep[0]
+                    r["gate_b"] = stroke_finish_ep[1]
+                else:
+                    print(f"  Finish bar at ({bar_cx:.0f},{bar_cy:.0f}) is {dist:.0f}pt from "
+                          f"text label — ignoring bar endpoints", file=sys.stderr)
+                break
+
+    # --- 3. Colored bar fills: fallback when no stroke bars found ---
+    if not has_start or not has_finish:
+        best_start  = None
+        best_finish = None
+        for d in drawings:
+            fill = d.get("fill")
+            if fill is None:
+                continue
+            rect = d.get("rect")
+            if rect is None:
+                continue
+            w = rect.x1 - rect.x0
+            h = rect.y1 - rect.y0
+            area = w * h
+            if area < _BAR_MIN_AREA:
+                continue
+            if min(w, h) > _BAR_MAX_MIN_DIM:
+                continue
+            cx = (rect.x0 + rect.x1) / 2
+            cy = (rect.y0 + rect.y1) / 2
+            if not has_start and _is_start_bar_color(fill):
+                if best_start is None or area > best_start[0]:
+                    best_start = (area, cx, cy)
+            elif not has_finish and _is_finish_bar_color(fill):
+                if best_finish is None or area > best_finish[0]:
+                    best_finish = (area, cx, cy)
+
+        if best_start:
+            results.append({"type": "timing_start", "pdf_x": best_start[1], "pdf_y": best_start[2], "source": "bar"})
+            has_start = True
+        if best_finish:
+            results.append({"type": "timing_end", "pdf_x": best_finish[1], "pdf_y": best_finish[2], "source": "bar"})
+            has_finish = True
+
+    # --- 3. Cone-number finish: always compute, use to validate/replace bar result ---
+    cn_finish = _detect_finish_from_cone_numbers(page)
+    if cn_finish:
+        existing = next((r for r in results if r["type"] == "timing_end"), None)
+        if existing is None:
+            results.append(cn_finish)
+        elif existing.get("source") == "bar":
+            # Only validate/replace bar results — text labels are authoritative.
+            d = math.hypot(existing["pdf_x"] - cn_finish["pdf_x"],
+                           existing["pdf_y"] - cn_finish["pdf_y"])
+            if d > 150:
+                print(f"  Finish bar at ({existing['pdf_x']:.0f},{existing['pdf_y']:.0f}) "
+                      f"is {d:.0f}pt from cone-number estimate "
+                      f"({cn_finish['pdf_x']:.0f},{cn_finish['pdf_y']:.0f}) — "
+                      f"using cone-number result", file=sys.stderr)
+                results = [r for r in results if r["type"] != "timing_end"]
+                results.append(cn_finish)
+
     return results
+
+
+def _detect_finish_from_cone_numbers(page):
+    """Infer finish gate position from cone number sequences.
+
+    Solo Nationals courses number cones by section (100s = section 1 near start,
+    500s/600s = last section near finish).  The finish gate sits where the
+    highest-numbered section transitions into the finish chute — identified as
+    the largest positional gap when last-section cones are projected onto their
+    primary direction of travel.
+
+    Returns a dict {'type':'timing_end', 'pdf_x':..., 'pdf_y':..., 'source':'cone_numbers'}
+    or None if insufficient data.
+    """
+    labels = {}   # number → (x, y)
+    try:
+        for block in page.get_text("dict").get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    txt = span.get("text", "").strip()
+                    if txt.isdigit():
+                        n = int(txt)
+                        if 100 <= n <= 699:
+                            x = (span["bbox"][0] + span["bbox"][2]) / 2
+                            y = (span["bbox"][1] + span["bbox"][3]) / 2
+                            labels[n] = (x, y)
+    except Exception:
+        return None
+
+    if not labels:
+        return None
+
+    max_section = max(n // 100 for n in labels)
+    if max_section < 2:
+        return None
+
+    last_cones = sorted(
+        [(n, labels[n]) for n in labels if n // 100 == max_section],
+        key=lambda t: t[0]
+    )
+    if len(last_cones) < 4:
+        return None
+
+    sec1_pts = [labels[n] for n in labels if n // 100 == 1]
+
+    # Primary travel direction via PCA of last-section cone positions
+    pts = np.array([c[1] for c in last_cones], dtype=float)
+    pts_c = pts - pts.mean(axis=0)
+    _, _, vt = np.linalg.svd(pts_c, full_matrices=False)
+    travel = vt[0]   # principal axis (un-signed)
+
+    # Project all last-section cones onto the travel axis and sort
+    projections = pts_c @ travel
+    order = np.argsort(projections)
+    sorted_proj = projections[order]
+    sorted_pts  = pts[order]
+
+    # Find the gap that is flanked by section-1 cones on the other side of the
+    # driving lane.  This distinguishes the finish gate gap (which has section-1
+    # finish-chute cones nearby) from the bottom-of-course section transition
+    # (which does not).
+    gaps = np.diff(sorted_proj)
+    best_gap_idx  = None
+    best_gap_size = 0.0
+    SEC1_PROXIMITY = 300.0   # pt — max distance to nearest sec-1 cone
+
+    for i in range(len(gaps)):
+        gx_candidate = (sorted_pts[i][0] + sorted_pts[i + 1][0]) / 2
+        gy_candidate = (sorted_pts[i][1] + sorted_pts[i + 1][1]) / 2
+        nearest_sec1 = min(
+            (math.hypot(p[0] - gx_candidate, p[1] - gy_candidate) for p in sec1_pts),
+            default=1e9
+        )
+        if nearest_sec1 < SEC1_PROXIMITY and gaps[i] > best_gap_size:
+            best_gap_size = gaps[i]
+            best_gap_idx  = i
+
+    # If no sec-1-flanked gap found, fall back to largest overall gap
+    if best_gap_idx is None:
+        best_gap_idx  = int(np.argmax(gaps))
+        best_gap_size = gaps[best_gap_idx]
+
+    gx = (sorted_pts[best_gap_idx][0] + sorted_pts[best_gap_idx + 1][0]) / 2
+    gy = (sorted_pts[best_gap_idx][1] + sorted_pts[best_gap_idx + 1][1]) / 2
+
+    # Refine lateral position: average x/y between last-section cones near the
+    # gap and section-1 chute cones on the other side
+    last_near = [c[1] for c in last_cones if math.hypot(c[1][0]-gx, c[1][1]-gy) < 150]
+    sec1_near = [p for p in sec1_pts    if math.hypot(p[0]-gx,     p[1]-gy)     < 150]
+    if last_near and sec1_near:
+        gx = (sum(p[0] for p in last_near) / len(last_near) +
+              sum(p[0] for p in sec1_near)  / len(sec1_near)) / 2
+        gy = (sum(p[1] for p in last_near) / len(last_near) +
+              sum(p[1] for p in sec1_near)  / len(sec1_near)) / 2
+
+    print(f"  Finish gate from cone numbers: section={max_section*100}s, "
+          f"gap={best_gap_size:.0f}pt, gate≈({gx:.0f},{gy:.0f})", file=sys.stderr)
+
+    return {"type": "timing_end", "pdf_x": gx, "pdf_y": gy, "source": "cone_numbers"}
+
+
+def _detect_stage_position(page, gate_pdf_x=None, gate_pdf_y=None, max_dist_pt=300.0):
+    """Return the centroid (pdf_x, pdf_y) of the lowest section-1 cone numbers near the start gate.
+
+    Finds all section-1 cones (100-199) within max_dist_pt of the gate, then uses the
+    cluster containing the lowest-numbered cone as the staging reference.  This avoids
+    being confused by finish-chute cones (also section-1) which are far from the gate.
+
+    If gate position is unknown, considers all section-1 cones globally.
+    Returns None if fewer than 2 qualifying labels are found.
+    """
+    labels = {}
+    try:
+        for block in page.get_text("dict").get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    txt = span.get("text", "").strip()
+                    if txt.isdigit():
+                        n = int(txt)
+                        if 100 <= n <= 199:
+                            x = (span["bbox"][0] + span["bbox"][2]) / 2
+                            y = (span["bbox"][1] + span["bbox"][3]) / 2
+                            labels[n] = (x, y)
+    except Exception:
+        return None
+
+    if not labels:
+        return None
+
+    # Filter to those near the gate when we know the gate position
+    if gate_pdf_x is not None:
+        nearby = {n: (x, y) for n, (x, y) in labels.items()
+                  if math.hypot(x - gate_pdf_x, y - gate_pdf_y) <= max_dist_pt}
+        if len(nearby) >= 2:
+            labels = nearby
+
+    if len(labels) < 2:
+        return None
+
+    # Use the 5 lowest-numbered cones as the staging reference
+    stage_cones = dict(sorted(labels.items())[:5])
+    pts = list(stage_cones.values())
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    print(f"  Stage cones {sorted(stage_cones)}: pdf centroid ({cx:.0f},{cy:.0f})", file=sys.stderr)
+    return (cx, cy)
 
 
 # ---------------------------------------------------------------------------
@@ -574,61 +903,217 @@ def pdf_to_blender(pdf_x, pdf_y, cx_centroid, cy_centroid, m_per_pt):
 # Timing cone tagging
 # ---------------------------------------------------------------------------
 
+def find_cones_by_label(page, drawings, cone_numbers, m_per_pt, cx_centroid, cy_centroid,
+                        max_label_dist_pt=40.0):
+    """Return Blender-coord dicts for standing cones identified by their numeric labels.
+
+    Searches the PDF text stream for spans whose text contains any of the requested
+    numbers (handles both individual labels like "109" and paired labels like "518,519").
+    For each matched label, finds the nearest dark circle within max_label_dist_pt and
+    returns it as a cone dict.
+
+    cone_numbers: list of ints, e.g. [109, 110, 111, 112]
+    """
+    # Build a set of string forms for quick lookup
+    targets = {str(n) for n in cone_numbers}
+
+    # Collect label positions: map each target number → nearest label origin
+    label_hits = {}
+    try:
+        for block in page.get_text("dict").get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    text = span.get("text", "").strip()
+                    if not text:
+                        continue
+                    orig = span.get("origin", (0, 0))
+                    # Handle comma-separated paired labels ("518,519")
+                    parts = [p.strip() for p in text.replace(" ", ",").split(",")]
+                    for part in parts:
+                        if part in targets and part not in label_hits:
+                            label_hits[part] = (orig[0], orig[1])
+    except Exception:
+        pass
+
+    if not label_hits:
+        return []
+
+    DARK = 0.35
+    results = []
+    used_circles = set()
+
+    for num_str in sorted(label_hits, key=int):
+        lx, ly = label_hits[num_str]
+        best_d, best_d_info = 1e9, None
+        for d in drawings:
+            fill = d.get("fill")
+            if fill is None or not all(c < DARK for c in fill[:3]):
+                continue
+            items = d.get("items", [])
+            if sum(1 for it in items if it[0] == "c") < 2:
+                continue
+            rect = d["rect"]
+            cx = (rect.x0 + rect.x1) / 2
+            cy = (rect.y0 + rect.y1) / 2
+            key = (round(cx, 1), round(cy, 1))
+            if key in used_circles:
+                continue
+            dist = math.hypot(cx - lx, cy - ly)
+            if dist < best_d:
+                best_d, best_d_info = dist, (cx, cy, key)
+
+        if best_d_info and best_d <= max_label_dist_pt:
+            cx_c, cy_c, key = best_d_info
+            used_circles.add(key)
+            bx, by = pdf_to_blender(cx_c, cy_c, cx_centroid, cy_centroid, m_per_pt)
+            results.append({"bx": bx, "by": by, "type": None, "size": 1,
+                            "label": int(num_str), "source": "label"})
+
+    return results
+
+
+def _validate_timing_lights(det, m_per_pt):
+    """Validate and correct timing light positions (gate endpoints).
+
+    Timing lights should be positioned 50ft wider than the gate (25ft on each side),
+    or 75ft minimum when gate width is unknown. This ensures consistent timing sensor
+    placement across all courses.
+
+    Returns the detection dict, possibly with corrected gate_a and gate_b.
+    """
+    if not det.get("gate_a") or not det.get("gate_b"):
+        return det
+
+    ax, ay = det["gate_a"]
+    bx, by = det["gate_b"]
+
+    # Gate width in PDF points (1pt = 1ft)
+    gate_width_pt = math.hypot(bx - ax, by - ay)
+    gate_width_ft = gate_width_pt  # 1 pt = 1 ft
+
+    # Desired timing light width: 50ft wider than gate, minimum 75ft
+    desired_width_ft = max(75.0, gate_width_ft + 50.0)
+    desired_width_pt = desired_width_ft
+
+    # If timing lights are significantly different, adjust them
+    if abs(gate_width_pt - desired_width_pt) > 5.0:  # Allow 5ft tolerance
+        # Expand/contract gate endpoints symmetrically
+        # Direction along gate
+        dx = bx - ax
+        dy = by - ay
+        length = math.hypot(dx, dy)
+        if length > 0:
+            dx_norm = dx / length
+            dy_norm = dy / length
+
+            # Center of gate
+            cx_gate = (ax + bx) / 2
+            cy_gate = (ay + by) / 2
+
+            # New endpoints at desired width
+            half_width = desired_width_pt / 2
+            new_ax = cx_gate - dx_norm * half_width
+            new_ay = cy_gate - dy_norm * half_width
+            new_bx = cx_gate + dx_norm * half_width
+            new_by = cy_gate + dy_norm * half_width
+
+            print(f"  Timing lights corrected: {gate_width_ft:.1f}ft → {desired_width_ft:.1f}ft",
+                  file=sys.stderr)
+            det = dict(det)  # shallow copy
+            det["gate_a"] = (new_ax, new_ay)
+            det["gate_b"] = (new_bx, new_by)
+
+    return det
+
+
 def tag_timing_cones(standing, text_detections, m_per_pt, cx, cy,
-                     radius_m=10.0, bar_radius_m=80.0):
-    """Move standing cones near Start/Finish labels into timing_start / timing_end lists.
+                     radius_m=10.0):
+    """Place timing markers at bar/text positions and tag nearby standing cones.
 
-    Finds up to 2 nearest standing cones within radius_m for each text label,
-    or bar_radius_m for bar-sourced detections.
+    For bar-sourced detections the bar centroid is used directly as the marker
+    position — the bar IS the timing line, so its centre is the right coordinate.
+    For text-sourced detections (fallback when no bar was found), the 2 nearest
+    standing cones within radius_m are pulled into the timing list instead, since
+    the text label may be offset from the actual gate.
 
-    If no standing cones are found within range for a bar detection, a synthetic
-    cone is inserted at the bar's centroid position so the timing position is
-    preserved even when gate cones are absent from that page.
+    Standing cones are never removed from the main list; timing entries are
+    additional records alongside the regular cone data.
 
-    Returns (remaining_standing, timing_start_list, timing_end_list).
+    Returns (standing_unchanged, timing_start_list, timing_end_list).
     """
     if not text_detections:
         return standing, [], []
 
     timing_start = []
     timing_end   = []
-    tagged_idxs  = set()
 
     for det in text_detections:
         tbx, tby = pdf_to_blender(det["pdf_x"], det["pdf_y"], cx, cy, m_per_pt)
-        r = bar_radius_m if det.get("source") == "bar" else radius_m
 
-        dists = []
-        for i, sc in enumerate(standing):
-            d = math.hypot(sc["bx"] - tbx, sc["by"] - tby)
-            dists.append((d, i))
-        dists.sort()
+        # Convert gate endpoints to world space if present
+        gate_world = None
+        if det.get("gate_a") and det.get("gate_b"):
+            ax, ay = pdf_to_blender(det["gate_a"][0], det["gate_a"][1], cx, cy, m_per_pt)
+            bx, by = pdf_to_blender(det["gate_b"][0], det["gate_b"][1], cx, cy, m_per_pt)
+            gate_world = {"a": [ax, ay], "b": [bx, by]}
 
-        n_tagged = 0
-        for d, i in dists[:2]:
-            if d <= r and i not in tagged_idxs:
-                tagged_idxs.add(i)
+        if det.get("source") == "bar":
+            # Create two timing cones: one at each gate endpoint (left and right sensors)
+            if gate_world:
+                a_bx, a_by = gate_world["a"]
+                b_bx, b_by = gate_world["b"]
+                cone_a = {"bx": round(a_bx, 3), "by": round(a_by, 3),
+                          "type": det["type"], "size": 1, "source": "bar"}
+                cone_b = {"bx": round(b_bx, 3), "by": round(b_by, 3),
+                          "type": det["type"], "size": 1, "source": "bar"}
+                if det["type"] == "timing_start":
+                    timing_start.extend([cone_a, cone_b])
+                else:
+                    timing_end.extend([cone_a, cone_b])
+            else:
+                # Fallback: single marker at centroid if no gate endpoints
+                marker = {"bx": round(tbx, 3), "by": round(tby, 3),
+                          "type": det["type"], "size": 1, "source": "bar"}
+                if det["type"] == "timing_start":
+                    timing_start.append(marker)
+                else:
+                    timing_end.append(marker)
+        else:
+            # Text fallback: grab up to 2 nearest standing cones within radius_m.
+            dists = sorted(
+                (math.hypot(sc["bx"] - tbx, sc["by"] - tby), i)
+                for i, sc in enumerate(standing)
+            )
+            tagged = []
+            for d, i in dists[:2]:
+                if d > radius_m:
+                    break
                 sc = dict(standing[i])
                 sc["type"] = det["type"]
+                sc["source"] = "text"
+                tagged.append(sc)
+            # Attach gate endpoints from stroke bar if available
+            if gate_world and len(tagged) == 2:
+                # Assign a/b endpoints to the two cones so Blender can use exact bar ends
+                a = gate_world["a"]
+                b = gate_world["b"]
+                # Assign a to whichever cone is closer to endpoint a
+                da = math.hypot(tagged[0]["bx"] - a[0], tagged[0]["by"] - a[1])
+                db = math.hypot(tagged[0]["bx"] - b[0], tagged[0]["by"] - b[1])
+                if da > db:
+                    a, b = b, a
+                tagged[0]["gate_end"] = a
+                tagged[1]["gate_end"] = b
+            elif gate_world:
+                for sc in tagged:
+                    sc["gate"] = gate_world
+            for sc in tagged:
                 if det["type"] == "timing_start":
                     timing_start.append(sc)
                 else:
                     timing_end.append(sc)
-                n_tagged += 1
 
-        # Bar fallback: no cone found — insert synthetic marker at bar position
-        if n_tagged == 0 and det.get("source") == "bar":
-            synthetic = {
-                "bx": round(tbx, 3), "by": round(tby, 3),
-                "type": det["type"], "size": 1,
-            }
-            if det["type"] == "timing_start":
-                timing_start.append(synthetic)
-            else:
-                timing_end.append(synthetic)
-
-    remaining = [sc for i, sc in enumerate(standing) if i not in tagged_idxs]
-    return remaining, timing_start, timing_end
+    return standing, timing_start, timing_end
 
 
 # ---------------------------------------------------------------------------
@@ -636,9 +1121,15 @@ def tag_timing_cones(standing, text_detections, m_per_pt, cx, cy,
 # ---------------------------------------------------------------------------
 
 def run(pdf_path, page_idx, out_path,
-        preview_path=None, map_path=None, snap_pointers=True,
+        preview_path=None, map_path=None, snap_pointers=False,
         snap_radius_m=POINTER_SNAP_ANCHOR_RADIUS_M,
-        course_path=None):
+        course_path=None,
+        timing_start_cones=None,
+        timing_end_cones=None,
+        chalk_path=None,
+        chalk_width_in=5.0,
+        invert_start_gate=False,
+        invert_finish_gate=False):
 
     print(f"Opening {pdf_path} page {page_idx} ...", file=sys.stderr)
     doc  = fitz.open(pdf_path)
@@ -662,6 +1153,16 @@ def run(pdf_path, page_idx, out_path,
                 and pr.y0 <= (d["rect"].y0 + d["rect"].y1) / 2 <= pr.y1]
     print(f"  Drawings in page rect: {len(drawings)}", file=sys.stderr)
 
+    # Discard drawings within PAGE_MARGIN_PT of any page edge.
+    # Border markers, scale bars, and spectator-zone fixtures cluster near the
+    # edges; course cones are always well inside the page bounds.
+    inner = fitz.Rect(pr.x0 + PAGE_MARGIN_PT, pr.y0 + PAGE_MARGIN_PT,
+                      pr.x1 - PAGE_MARGIN_PT, pr.y1 - PAGE_MARGIN_PT)
+    drawings = [d for d in drawings
+                if inner.contains(fitz.Point((d["rect"].x0 + d["rect"].x1) / 2,
+                                             (d["rect"].y0 + d["rect"].y1) / 2))]
+    print(f"  After page-margin filter ({PAGE_MARGIN_PT:.0f} pt): {len(drawings)}", file=sys.stderr)
+
     # --- Scale (1 pt = 1 ft, confirmed by source) ---
     m_per_pt = M_PER_PT
     print(f"  Scale: {m_per_pt} m/pt (1 pt = 1 ft)", file=sys.stderr)
@@ -674,24 +1175,71 @@ def run(pdf_path, page_idx, out_path,
         result = classify_candidate(d)
         if result is None:
             continue
-        kind, cx, cy, tip_angle = result
+        kind, cx, cy, tip_angle, area_pt2, nl = result
         if kind == "standing":
             raw_standing.append({"pdf_x": cx, "pdf_y": cy, "tip_angle": None})
         else:
-            raw_pointer.append({"pdf_x": cx, "pdf_y": cy, "tip_angle": tip_angle})
+            raw_pointer.append({"pdf_x": cx, "pdf_y": cy, "tip_angle": tip_angle,
+                                 "area_pt2": area_pt2, "nl": nl})
 
     print(f"  Raw candidates: {len(raw_standing)} standing, {len(raw_pointer)} pointer",
           file=sys.stderr)
 
     # --- Filter text-glyph false positives ---
-    text_bboxes = get_text_bboxes(page)
-    n_before = len(raw_standing) + len(raw_pointer)
-    raw_standing = filter_text_glyphs(raw_standing, text_bboxes)
-    raw_pointer  = filter_text_glyphs(raw_pointer,  text_bboxes)
-    n_after = len(raw_standing) + len(raw_pointer)
-    if n_before != n_after:
-        print(f"  Text filter: removed {n_before - n_after} glyph false positives "
-              f"({len(text_bboxes)} text spans)", file=sys.stderr)
+    # Only applies when text is rendered as outlined vector paths (some Illustrator
+    # exports).  If the text stream and the drawings don't overlap on circular
+    # characters, the filter would only remove real cone circles that happen to sit
+    # under numeric cone labels — so skip it in that case.
+    text_bboxes = []
+    if has_outlined_text(page, drawings):
+        text_bboxes = get_text_bboxes(page)
+        n_before = len(raw_standing) + len(raw_pointer)
+        raw_standing = filter_text_glyphs(raw_standing, text_bboxes)
+        raw_pointer  = filter_text_glyphs(raw_pointer,  text_bboxes)
+        n_after = len(raw_standing) + len(raw_pointer)
+        if n_before != n_after:
+            print(f"  Text filter: removed {n_before - n_after} glyph false positives "
+                  f"({len(text_bboxes)} text spans)", file=sys.stderr)
+    else:
+        print("  Text filter: skipped (text is not outlined in this PDF)", file=sys.stderr)
+
+    # --- Consensus-size filter for pointer candidates ---
+    # All cone pointer symbols on a given map are drawn at the same size.
+    # Numbering arrows and other annotations that slipped under MAX_CONE_AREA tend
+    # to be outliers in the area distribution.  Use the lower-half median to anchor
+    # the reference and discard anything outside [0.25×, 4×] median.
+    if len(raw_pointer) > 4:
+        raw_ptr_areas = sorted(c["area_pt2"] for c in raw_pointer)
+        ref = raw_ptr_areas[: max(1, len(raw_ptr_areas) // 2)]
+        median_area = ref[len(ref) // 2]
+        lo, hi = median_area * 0.25, median_area * 4.0
+        before = len(raw_pointer)
+        raw_pointer = [c for c in raw_pointer if lo <= c["area_pt2"] <= hi]
+        removed = before - len(raw_pointer)
+        if removed:
+            print(f"  Consensus-size filter: removed {removed} pointer outliers "
+                  f"(median {median_area:.1f} pt², range {lo:.1f}–{hi:.1f})",
+                  file=sys.stderr)
+
+    # --- Line-count dominance filter for pointer candidates ---
+    # Real pointer cone symbols in Illustrator-exported PDFs are consistently drawn
+    # with the same number of line segments (e.g. 8 for the arrow-base symbol, 3 for
+    # a plain triangle).  Annotation arrowheads and numbering arrows use a different
+    # segment count.  If one nl value accounts for ≥60% of candidates, discard shapes
+    # with a count more than 2 below it (they're a different symbol type entirely).
+    if len(raw_pointer) > 4:
+        from collections import Counter
+        nl_counts = Counter(c["nl"] for c in raw_pointer)
+        dominant_nl, dominant_count = nl_counts.most_common(1)[0]
+        if dominant_count / len(raw_pointer) >= 0.6 and dominant_nl >= 5:
+            min_nl = dominant_nl - 2
+            before = len(raw_pointer)
+            raw_pointer = [c for c in raw_pointer if c["nl"] >= min_nl]
+            removed = before - len(raw_pointer)
+            if removed:
+                print(f"  Line-count filter: removed {removed} pointers with nl < {min_nl} "
+                      f"(dominant nl={dominant_nl}, {dominant_count}/{before})",
+                      file=sys.stderr)
 
     # --- Dot-cluster standing cones (micro-triangle representation) ---
     dot_clusters = detect_dot_clusters(drawings)
@@ -728,10 +1276,12 @@ def run(pdf_path, page_idx, out_path,
     print(f"  Centroid: ({cx_centroid:.1f}, {cy_centroid:.1f}) pt", file=sys.stderr)
 
     transform = {
-        "type":  "scale",
-        "scale": round(m_per_pt, 6),
-        "ox":    round(-m_per_pt * cx_centroid, 4),
-        "oy":    round( m_per_pt * cy_centroid, 4),
+        "type":     "scale",
+        "scale":    round(m_per_pt, 6),
+        "ox":       round(-m_per_pt * cx_centroid, 4),
+        "oy":       round( m_per_pt * cy_centroid, 4),
+        "page_w_pt": round(page.rect.width,  3),
+        "page_h_pt": round(page.rect.height, 3),
     }
 
     # --- Convert to Blender coords ---
@@ -747,13 +1297,103 @@ def run(pdf_path, page_idx, out_path,
                 for c in raw_pointer]
 
     # --- Start / Finish ---
-    text_dets = detect_start_finish(page, drawings)
-    print(f"  Text detections: {text_dets}", file=sys.stderr)
-    standing, timing_start, timing_end = tag_timing_cones(
-        standing, text_dets, m_per_pt, cx_centroid, cy_centroid,
-    )
+    if timing_start_cones or timing_end_cones:
+        # Explicit cone numbers supplied in jobs file — look them up by text label.
+        timing_start = []
+        timing_end   = []
+        if timing_start_cones:
+            found = find_cones_by_label(
+                page, drawings, timing_start_cones, m_per_pt, cx_centroid, cy_centroid)
+            for c in found:
+                c["type"] = "timing_start"
+            timing_start = found
+            print(f"  Timing start (labels {timing_start_cones}): {len(found)} cones found",
+                  file=sys.stderr)
+        if timing_end_cones:
+            found = find_cones_by_label(
+                page, drawings, timing_end_cones, m_per_pt, cx_centroid, cy_centroid)
+            for c in found:
+                c["type"] = "timing_end"
+            timing_end = found
+            print(f"  Timing end   (labels {timing_end_cones}): {len(found)} cones found",
+                  file=sys.stderr)
+    else:
+        text_dets = detect_start_finish(page, drawings)
+        # Validate and correct timing light positions
+        text_dets = [_validate_timing_lights(d, m_per_pt) for d in text_dets]
+        print(f"  Text detections: {text_dets}", file=sys.stderr)
+        standing, timing_start, timing_end = tag_timing_cones(
+            standing, text_dets, m_per_pt, cx_centroid, cy_centroid,
+        )
 
-    # --- Pointer orientation (toward nearest standing cone) ---
+    # Extract gate endpoints (bar stroke endpoints → world space) for Blender markers.
+    # These are stored separately from the timing cone list.
+    def _gate_from_dets(dets, det_type):
+        for d in dets:
+            if d.get("type") == det_type and d.get("gate_a") and d.get("gate_b"):
+                ax, ay = pdf_to_blender(d["gate_a"][0], d["gate_a"][1],
+                                        cx_centroid, cy_centroid, m_per_pt)
+                bx, by = pdf_to_blender(d["gate_b"][0], d["gate_b"][1],
+                                        cx_centroid, cy_centroid, m_per_pt)
+                return {"a": [ax, ay], "b": [bx, by]}
+        return None
+
+    if timing_start_cones or timing_end_cones:
+        timing_start_gate = None
+        timing_end_gate   = None
+    else:
+        timing_start_gate = _gate_from_dets(text_dets, "timing_start")
+        timing_end_gate   = _gate_from_dets(text_dets, "timing_end")
+        if invert_start_gate and timing_start_gate:
+            print(f"  Inverting start gate", file=sys.stderr)
+            timing_start_gate = {"a": timing_start_gate["b"], "b": timing_start_gate["a"]}
+        if invert_finish_gate and timing_end_gate:
+            print(f"  Inverting finish gate", file=sys.stderr)
+            timing_end_gate = {"a": timing_end_gate["b"], "b": timing_end_gate["a"]}
+        if timing_start_gate:
+            print(f"  Start gate: {timing_start_gate}", file=sys.stderr)
+        if timing_end_gate:
+            print(f"  Finish gate: {timing_end_gate}", file=sys.stderr)
+
+    # Stage position: 100 GU away from centroid toward start gate
+    stage_cone_pos = None
+    _start_gate_pdf_x = None
+    _start_gate_pdf_y = None
+
+    if not (timing_start_cones or timing_end_cones):
+        # Get start gate from auto-detected gates
+        _start_det = next((d for d in text_dets if d["type"] == "timing_start"), None)
+        if _start_det:
+            _start_gate_pdf_x = _start_det["pdf_x"]
+            _start_gate_pdf_y = _start_det["pdf_y"]
+    else:
+        # Derive start gate from explicit timing cones (centroid of timing_start cones)
+        if timing_start:
+            ts_bxs = [c["bx"] for c in timing_start]
+            ts_bys = [c["by"] for c in timing_start]
+            ts_cx = sum(ts_bxs) / len(ts_bxs)
+            ts_cy = sum(ts_bys) / len(ts_bys)
+            # Convert back to PDF space for distance calculation
+            _start_gate_pdf_x = ts_cx / m_per_pt + cx_centroid
+            _start_gate_pdf_y = -(ts_cy / m_per_pt) + cy_centroid
+
+    if _start_gate_pdf_x is not None and _start_gate_pdf_y is not None:
+        # Direction from start gate toward centroid (into course)
+        dx = cx_centroid - _start_gate_pdf_x
+        dy = cy_centroid - _start_gate_pdf_y
+        dist = math.hypot(dx, dy)
+        if dist > 0:
+            # Position 100 GU (ft) before gate, opposite direction from course
+            norm_x = dx / dist
+            norm_y = dy / dist
+            stage_pdf_x = _start_gate_pdf_x - norm_x * 100.0  # 100 GU away from gate, opposite from course
+            stage_pdf_y = _start_gate_pdf_y - norm_y * 100.0
+            sx, sy = pdf_to_blender(stage_pdf_x, stage_pdf_y, cx_centroid, cy_centroid, m_per_pt)
+            stage_cone_pos = [sx, sy]
+            print(f"  Car start: 100pt before gate, away from course → ({sx:.2f}, {sy:.2f})m",
+                  file=sys.stderr)
+
+    # --- Pointer orientation (tip_from_pdf angle, fallback toward nearest standing cone) ---
     assign_pointer_facing(pointers, standing)
 
     # --- Snap pointers to physically correct positions ---
@@ -781,24 +1421,29 @@ def run(pdf_path, page_idx, out_path,
         }
 
     result = {
-        "transform":      transform,
-        "pointer_source": "pdf",
-        "n_standing":     len(standing),
-        "n_pointer":      len(pointers),
-        "n_timing_start": len(timing_start),
-        "n_timing_end":   len(timing_end),
-        "n_gcp":          0,
-        "bounds":         bounds,
-        "standing":       standing,
-        "pointers":       pointers,
-        "timing_start":   timing_start,
-        "timing_end":     timing_end,
-        "gcp":            [],
+        "transform":          transform,
+        "pointer_source":     "pdf",
+        "n_standing":         len(standing),
+        "n_pointer":          len(pointers),
+        "n_timing_start":     len(timing_start),
+        "n_timing_end":       len(timing_end),
+        "n_gcp":              0,
+        "bounds":             bounds,
+        "standing":           standing,
+        "pointers":           pointers,
+        "timing_start":       timing_start,
+        "timing_end":         timing_end,
+        "timing_start_gate":  timing_start_gate,
+        "timing_end_gate":    timing_end_gate,
+        "stage_cone_pos":     stage_cone_pos,
+        "gcp":                [],
     }
 
     # Strip internal-only fields before writing
+    _INTERNAL_FIELDS = {"tip_from_pdf", "nearest_standing_idx", "nearest_standing_dist"}
+
     def strip_internal(cone):
-        return {k: v for k, v in cone.items() if k != "tip_from_pdf"}
+        return {k: v for k, v in cone.items() if k not in _INTERNAL_FIELDS}
 
     result["standing"]     = [strip_internal(c) for c in result["standing"]]
     result["pointers"]     = [strip_internal(c) for c in result["pointers"]]
@@ -852,6 +1497,18 @@ def run(pdf_path, page_idx, out_path,
 
     if map_path:
         _export_map(page, map_path)
+
+    if chalk_path:
+        from detect_chalk_lines import extract_chalk_paths, render_chalk_mask
+        chalk_paths = extract_chalk_paths(page)
+        # Render full-page PNG in PDF page coordinates so UV mapping in Blender
+        # (which maps world coords back to full-page PDF coords) aligns correctly.
+        line_px = max(1, round(chalk_width_in / 12.0))
+        chalk_img = render_chalk_mask(page, chalk_paths, line_width_px=line_px, dpi=72, centered=False)
+        chalk_img.save(chalk_path)
+        print(f"  Chalk mask: {chalk_path} ({chalk_img.width}×{chalk_img.height} px, "
+              f"{len(chalk_paths)} paths, line={chalk_width_in}\" → {line_px}px)",
+              file=sys.stderr)
 
     return result
 
@@ -912,6 +1569,66 @@ def _render_preview(page, result, raw_standing, raw_pointer,
         draw.rectangle([px-R_TIME, py-R_TIME, px+R_TIME, py+R_TIME],
                        outline=(220, 40, 40), width=3)
 
+    # Draw gate bars and direction arrows
+    # Precompute which perpendicular side of each gate has more cones (interior side)
+    all_standing = result["standing"]
+
+    # Reference points in pixel space for interior-side determination
+    _b = result.get("bounds", {})
+    _cent_px, _cent_py = bl_to_px(
+        (_b.get("xmin", 0) + _b.get("xmax", 0)) / 2,
+        (_b.get("ymin", 0) + _b.get("ymax", 0)) / 2,
+    )
+    _stage = result.get("stage_cone_pos")
+    _stage_px, _stage_py = (bl_to_px(_stage[0], _stage[1]) if _stage else (_cent_px, _cent_py))
+
+    def _interior_perp_px(ax, ay, bx, by, ref_px=None, ref_py=None):
+        """Return the screen-space perpendicular pointing toward (ref_px, ref_py)."""
+        if ref_px is None:
+            ref_px, ref_py = _cent_px, _cent_py
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        bdx, bdy = bx - ax, by - ay
+        blen = math.hypot(bdx, bdy) or 1.0
+        px1, py1 = -bdy / blen, bdx / blen
+        to_cx = ref_px - mx
+        to_cy = ref_py - my
+        return (px1, py1) if to_cx * px1 + to_cy * py1 > 0 else (-px1, -py1)
+
+    def _draw_gate_arrow(gate, color, toward_interior, ref_px=None, ref_py=None):
+        """Draw bar line + travel-direction arrow for a timing gate."""
+        if not gate:
+            return
+        ax, ay = bl_to_px(gate["a"][0], gate["a"][1])
+        bx, by = bl_to_px(gate["b"][0], gate["b"][1])
+        draw.line([(ax, ay), (bx, by)], fill=color, width=max(3, int(4 * scale)))
+
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+
+        # Calculate perpendicular and use a->b direction to determine which way arrow points
+        bdx, bdy = bx - ax, by - ay
+        blen = math.hypot(bdx, bdy) or 1.0
+        px1, py1 = -bdy / blen, bdx / blen
+
+        # Perpendicular points in direction of a->b vector
+        ix, iy = px1, py1
+        dx, dy = (ix, iy) if toward_interior else (-ix, -iy)
+
+        arrow_len = max(20, int(30 * scale))
+        tip_x = mx + dx * arrow_len
+        tip_y = my + dy * arrow_len
+        draw.line([(mx, my), (tip_x, tip_y)], fill=color, width=max(2, int(3 * scale)))
+        head = arrow_len * 0.35
+        lx = tip_x - dx * head + dy * head * 0.5
+        ly = tip_y - dy * head - dx * head * 0.5
+        rx = tip_x - dx * head - dy * head * 0.5
+        ry = tip_y - dy * head + dx * head * 0.5
+        draw.polygon([(tip_x, tip_y), (lx, ly), (rx, ry)], fill=color)
+
+    # Start arrow: away from stage (stage is behind the gate)
+    _draw_gate_arrow(result.get("timing_start_gate"), (0, 220, 80),
+                     toward_interior=False, ref_px=_stage_px, ref_py=_stage_py)
+    _draw_gate_arrow(result.get("timing_end_gate"),   (220, 60, 60), toward_interior=False)
+
     img.save(preview_path)
     print(f"  Preview: {preview_path}", file=sys.stderr)
 
@@ -932,12 +1649,16 @@ def parse_args():
     p.add_argument("--map",        default=None,  help="Output clean map PNG at 72 DPI (1px=1pt=1ft)")
     p.add_argument("--preview",    default=None,  help="Optional annotated PNG output")
     p.add_argument("--course",     default=None,  help="Output course outline texture PNG path")
-    p.add_argument("--no-snap-pointers", action="store_true", default=False,
+    p.add_argument("--snap-pointers", action="store_true", default=False,
                    help="Disable snapping pointer cones to 3-inch increments")
     p.add_argument("--snap-radius", type=float, default=POINTER_SNAP_ANCHOR_RADIUS_M,
                    metavar="M",
                    help=f"Max anchor-pointer distance for snapping "
                         f"(default: {POINTER_SNAP_ANCHOR_RADIUS_M}m)")
+    p.add_argument("--invert-start-gate", action="store_true", default=False,
+                   help="Swap start gate endpoints (left ↔ right)")
+    p.add_argument("--invert-finish-gate", action="store_true", default=False,
+                   help="Swap finish gate endpoints (left ↔ right)")
     return p.parse_args()
 
 
@@ -950,6 +1671,8 @@ if __name__ == "__main__":
         preview_path=args.preview,
         map_path=args.map,
         course_path=args.course,
-        snap_pointers=not args.no_snap_pointers,
+        snap_pointers=args.snap_pointers,
         snap_radius_m=args.snap_radius,
+        invert_start_gate=args.invert_start_gate,
+        invert_finish_gate=args.invert_finish_gate,
     )

@@ -85,6 +85,10 @@ CONE_HEIGHT_M      = 0.4318        # 17" tall
 # be anywhere — they follow the anchor's direction.
 POINTER_SNAP_ANCHOR_RADIUS_M = 3.0   # closest pointer to its standing cone (~10 ft)
 POINTER_CHAIN_RADIUS_M       = 2.0   # pointer-to-pointer chain link distance (~6.5 ft)
+POINTER_GROUP_RADIUS_M = 2.0  # ~6.5 ft — max distance to associate a pointer with a standing
+                              # cone.  Physically "2 cone widths" ≈ 0.56 m, but PDF centroid
+                              # positions have enough slop that observed minimum distances start
+                              # at ~0.94 m; 2 m cleanly separates adjacent from standalone.
 
 
 # ---------------------------------------------------------------------------
@@ -366,17 +370,22 @@ def detect_blue(arr):
 # Pointer orientation
 # ---------------------------------------------------------------------------
 
-def assign_pointer_facing(pointers, standing):
-    """For each pointer cone, find the nearest standing cone and compute
-    the angle (degrees, CCW from +X axis) from pointer toward standing.
-    Stored as 'facing_deg' in each pointer entry.
+def assign_pointer_facing(pointers, standing,
+                          group_radius_m=POINTER_GROUP_RADIUS_M):
+    """Set facing_deg and nearest_standing_idx/dist for each pointer.
 
-    This angle is the Z-rotation to apply in Blender so the pointer cone
-    faces its associated standing cone.
+    facing_deg: uses tip_from_pdf (the actual drawn arrow angle) when available.
+    Falls back to the direction toward the nearest standing cone only when
+    tip_from_pdf is absent.
+
+    nearest_standing_idx and nearest_standing_dist are always set (used by
+    snap_pointers_to_standing to decide whether to reposition the pointer).
     """
     if not standing:
         for p in pointers:
-            p["facing_deg"] = None
+            p["facing_deg"] = p.get("tip_from_pdf")
+            p["nearest_standing_idx"] = None
+            p["nearest_standing_dist"] = float("inf")
         return
 
     stand_arr = np.array([[s["bx"], s["by"]] for s in standing])
@@ -384,11 +393,19 @@ def assign_pointer_facing(pointers, standing):
     for p in pointers:
         dx = stand_arr[:, 0] - p["bx"]
         dy = stand_arr[:, 1] - p["by"]
-        dists = dx * dx + dy * dy
-        nearest = int(np.argmin(dists))
-        angle = math.degrees(math.atan2(dy[nearest], dx[nearest]))
-        p["facing_deg"] = round(angle, 1)
+        dists_sq = dx * dx + dy * dy
+        nearest = int(np.argmin(dists_sq))
+        nearest_dist = math.sqrt(float(dists_sq[nearest]))
         p["nearest_standing_idx"] = nearest
+        p["nearest_standing_dist"] = nearest_dist
+
+        tip = p.get("tip_from_pdf")
+        if tip is not None:
+            p["facing_deg"] = tip
+        else:
+            # Fallback: point toward nearest standing cone
+            angle = math.degrees(math.atan2(dy[nearest], dx[nearest]))
+            p["facing_deg"] = round(angle, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -399,80 +416,58 @@ def snap_pointers_to_standing(pointers, standing,
                                gap_m=POINTER_SNAP_GAP_M,
                                anchor_radius_m=POINTER_SNAP_ANCHOR_RADIUS_M,
                                chain_radius_m=POINTER_CHAIN_RADIUS_M,
+                               group_radius_m=POINTER_GROUP_RADIUS_M,
                                timing_cones=None):
-    """Reposition pointer chains to physically correct positions from their standing cone.
+    """Reposition pointer cones to physically correct positions relative to their standing cone.
 
-    For each standing cone:
-      1. Collect ALL pointers assigned to it (via nearest_standing_idx).
-      2. The CLOSEST pointer is the chain anchor — if it exceeds anchor_radius_m,
-         the chain is skipped (likely a stray detection with no real nearby pointer).
-      3. The anchor's direction toward the standing cone defines the chain axis.
-         Remaining chain members follow this axis regardless of how far they are
-         from the standing cone in the original image.
-      4. Pointer centers are placed at:
-           chain 0: base_radius + gap + cone_height/2  (tip is gap past standing edge)
-           chain 1: chain_0 + cone_height + gap        (tip is gap past prev cone base)
-           chain n: chain_0 + n * (cone_height + gap)
+    A pointer is grouped with a standing cone only if it is within group_radius_m
+    (default ~2 cone diameters).  Pointers outside that radius are not repositioned —
+    they are assumed to be independent and their tip_from_pdf facing is used as-is.
 
-    Updates 'bx', 'by', 'facing_deg' in-place.  Adds 'snapped': True for audit.
+    For each grouped pointer:
+      - Position is snapped to base_radius + gap + cone_height/2 from the standing cone,
+        in the direction from standing → pointer (i.e. the pointer sits just off the
+        standing cone's edge, in whichever direction the PDF placed it).
+      - facing_deg is NOT changed; each pointer keeps its own tip_from_pdf angle.
+
+    Multiple pointers assigned to the same standing cone are each snapped independently
+    (no chaining — their individual facing angles are preserved).
+
+    Updates 'bx', 'by' in-place.  Adds 'snapped': True for audit.
     Returns the number of pointers repositioned.
     """
     if not standing or not pointers:
         return 0
 
-    from collections import defaultdict
-    groups = defaultdict(list)
+    # Distance from standing cone center to pointer center when snapped.
+    snap_dist = CONE_BASE_RADIUS_M + gap_m + CONE_HEIGHT_M / 2   # ~0.43 m / ~17"
 
+    moved = 0
     for p in pointers:
         s_idx = p.get("nearest_standing_idx")
         if s_idx is None:
             continue
-        s = standing[s_idx]
-        dx = s["bx"] - p["bx"]
-        dy = s["by"] - p["by"]
-        dist = math.sqrt(dx * dx + dy * dy)
-        groups[s_idx].append((p, dist))
+        dist = p.get("nearest_standing_dist", float("inf"))
+        if dist > group_radius_m:
+            continue  # too far — independent pointer, keep as-is
 
-    # Distances along the chain from the standing cone center.
-    # first_dist: center of pointer 0 (tip is exactly gap_m past standing base edge)
-    # step_dist:  center-to-center spacing for subsequent pointers
-    first_dist = CONE_BASE_RADIUS_M + gap_m + CONE_HEIGHT_M / 2   # = 17" for standard cones
-    step_dist  = CONE_HEIGHT_M + gap_m                             # = 20" for standard cones
-
-    moved = 0
-    for s_idx, group in groups.items():
         s = standing[s_idx]
         sx, sy = s["bx"], s["by"]
 
-        # Sort by distance to standing; the anchor (index 0) must be within radius
-        group.sort(key=lambda t: t[1])
-        anchor_p, anchor_dist = group[0]
-        if anchor_dist > anchor_radius_m:
-            continue  # no pointer close enough to anchor this chain
-
-        # Chain axis: direction from the ANCHOR pointer toward the standing cone.
-        # Using the anchor (not the mean) keeps the axis stable even when distant
-        # chain members were detected at inaccurate image positions.
-        adx = sx - anchor_p["bx"]
-        ady = sy - anchor_p["by"]
+        # Direction from standing cone outward toward where the pointer was detected.
+        adx = p["bx"] - sx
+        ady = p["by"] - sy
         d = math.sqrt(adx * adx + ady * ady)
         if d < 1e-6:
             continue
-        ux, uy = adx / d, ady / d   # unit vector: pointer → standing
-        facing = round(math.degrees(math.atan2(uy, ux)), 1)
+        ux, uy = adx / d, ady / d
 
-        for chain_n, (p, _) in enumerate(group):
-            d_from_standing = first_dist + chain_n * step_dist
-            # Subtract ux/uy (toward standing) to move AWAY from standing
-            p["bx"] = round(sx - ux * d_from_standing, 3)
-            p["by"] = round(sy - uy * d_from_standing, 3)
-            p["facing_deg"] = facing
-            p["snapped"] = True
-            moved += 1
+        p["bx"] = round(sx + ux * snap_dist, 3)
+        p["by"] = round(sy + uy * snap_dist, 3)
+        p["snapped"] = True
+        moved += 1
 
     # Second pass: snap any still-unsnapped pointers to nearby timing cones.
-    # This handles pointers adjacent to green/red gate cones, which are not in
-    # the standing (orange) cone list and therefore missed by the first pass.
     if timing_cones:
         for p in pointers:
             if p.get("snapped"):
@@ -486,58 +481,20 @@ def snap_pointers_to_standing(pointers, standing,
                 if d < best_dist:
                     best_dist = d
                     best_tc   = tc
-            if best_tc is None or best_dist > anchor_radius_m:
+            if best_tc is None or best_dist > group_radius_m:
                 continue
-            adx = best_tc["bx"] - p["bx"]
-            ady = best_tc["by"] - p["by"]
+            adx = p["bx"] - best_tc["bx"]
+            ady = p["by"] - best_tc["by"]
             d   = math.sqrt(adx * adx + ady * ady)
             if d < 1e-6:
                 continue
             ux, uy  = adx / d, ady / d
-            facing  = round(math.degrees(math.atan2(uy, ux)), 1)
             d_place = CONE_BASE_RADIUS_M + gap_m + CONE_HEIGHT_M / 2
-            p["bx"] = round(best_tc["bx"] - ux * d_place, 3)
-            p["by"] = round(best_tc["by"] - uy * d_place, 3)
-            p["facing_deg"] = facing
+            p["bx"] = round(best_tc["bx"] + ux * d_place, 3)
+            p["by"] = round(best_tc["by"] + uy * d_place, 3)
             p["snapped"]    = True
             p["snapped_to_timing"] = True
             moved += 1
-
-    # Chain pass: extend chains through unsnapped pointers that are close to
-    # an already-snapped pointer.  Iterate until stable (handles multi-hop chains).
-    if chain_radius_m and chain_radius_m > 0:
-        changed = True
-        while changed:
-            changed = False
-            for p in pointers:
-                if p.get("snapped"):
-                    continue
-                # Find the nearest snapped pointer within chain_radius_m
-                best_dist = float("inf")
-                best_snap = None
-                for q in pointers:
-                    if not q.get("snapped"):
-                        continue
-                    dx = q["bx"] - p["bx"]
-                    dy = q["by"] - p["by"]
-                    d  = math.sqrt(dx * dx + dy * dy)
-                    if d < best_dist:
-                        best_dist = d
-                        best_snap = q
-                if best_snap is None or best_dist > chain_radius_m:
-                    continue
-                # Continue the chain: place this pointer one step further
-                # in the same direction as the snapped pointer (away from its anchor).
-                facing_rad = math.radians(best_snap["facing_deg"])
-                ux = math.cos(facing_rad)
-                uy = math.sin(facing_rad)
-                # Move one step_dist away from the snapped pointer (away from standing)
-                p["bx"] = round(best_snap["bx"] - ux * step_dist, 3)
-                p["by"] = round(best_snap["by"] - uy * step_dist, 3)
-                p["facing_deg"] = best_snap["facing_deg"]
-                p["snapped"] = True
-                moved += 1
-                changed = True
 
     return moved
 

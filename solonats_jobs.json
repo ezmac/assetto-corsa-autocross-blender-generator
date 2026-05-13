@@ -1,0 +1,372 @@
+[
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2009 Chris Cox, Michael Feldpusch/2009 West Cropped.pdf",
+    "page": 1,
+    "name": "2009_west",
+    "notes": "-8gu top",
+    "map": true,
+    "preview": true,
+    "course": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2009 Chris Cox, Michael Feldpusch/2009 East Cropped.pdf",
+    "page": 1,
+    "name": "2009_east",
+    "notes": "-9gu top",
+    "map": true,
+    "preview": true,
+    "course": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2010 Roger Johnson, Karen Babb/2010 West Cropped.pdf",
+    "page": 1,
+    "name": "2010_west",
+    "notes": "-6gu right, orange pedestrian walkway removed",
+    "map": true,
+    "preview": true,
+    "corrected_json": "generated/solonats/solonats_2010_west/project.json",
+    "course": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2010 Roger Johnson, Karen Babb/2010 East Cropped2.pdf",
+    "page": 1,
+    "name": "2010_east",
+    "notes": "-6gu left",
+    "map": true,
+    "preview": true,
+    "invert_finish_gate": true,
+    "invert_start_gate": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2010_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2011 Kevin Youngers, Andy Hollis/2011 Final Courses Flipped.pdf",
+    "page": 1,
+    "name": "2011_both",
+    "map": true,
+    "preview": true,
+    "skip": true,
+    "corrected_json": "SoloNationals/overrides/solonats_2011_east.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2011 Kevin Youngers, Andy Hollis/2011 East Cropped.pdf",
+    "page": 1,
+    "name": "2011_east",
+    "notes": "S-N, -54gu bottom (removes grid boxes below Spectator-East)",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "invert_start_gate": true,
+    "invert_finish_gate": true,
+    "corrected_json": "generated/solonats/solonats_2011_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2011 Kevin Youngers, Andy Hollis/2011 West Cropped.pdf",
+    "page": 1,
+    "name": "2011_west",
+    "notes": "S-N, orange pedestrian walkway removed, -2gu bottom",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2011_west/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2011 Kevin Youngers, Andy Hollis/2011 Pro Cropped.pdf",
+    "page": 1,
+    "name": "2011_pro",
+    "notes": "-700ft bottom",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2011_pro/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2012 Roger Johnson, Karen Babb/2012 Nationals East and West.pdf",
+    "page": 1,
+    "name": "2012_both",
+    "map": true,
+    "preview": true,
+    "skip": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2012 Roger Johnson, Karen Babb/2012 West Split.pdf",
+    "page": 1,
+    "name": "2012_west",
+    "notes": "split from combined at center, -22gu top",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2012_west/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2012 Roger Johnson, Karen Babb/2012 East Split.pdf",
+    "page": 1,
+    "name": "2012_east",
+    "notes": "split from combined at center, -13gu top",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2012_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2013 Sam Strano, Elliott Speidell/2013 Both.pdf",
+    "page": 1,
+    "name": "2013_both",
+    "map": true,
+    "preview": true,
+    "skip": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2013 Sam Strano, Elliott Speidell/2013 West Cropped2.pdf",
+    "page": 1,
+    "name": "2013_west",
+    "notes": "-12gu top, +9gu bottom",
+    "map": true,
+    "preview": true,
+    "invert_start_gate": true,
+    "course": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2013 Sam Strano, Elliott Speidell/2013 East.pdf",
+    "page": 1,
+    "name": "2013_east",
+    "map": true,
+    "preview": true,
+    "invert_start_gate": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2013_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2014 Vivek Goel, Lee Piccione/2014 Courses Flipped.pdf",
+    "page": 1,
+    "name": "2014_both",
+    "map": true,
+    "preview": true,
+    "skip": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2014 Vivek Goel, Lee Piccione/2014 West Split.pdf",
+    "page": 1,
+    "name": "2014_west",
+    "notes": "split from SET UP MAP at 31gu, -21gu bottom",
+    "map": true,
+    "preview": true,
+    "corrected_json": "generated/solonats/solonats_2014_west/project.json",
+    "invert_start_gate": true,
+    "invert_finish_gate": true,
+    "course": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2014 Vivek Goel, Lee Piccione/2014 East Split.pdf",
+    "page": 1,
+    "name": "2014_east",
+    "notes": "split from SET UP MAP at 31gu, -11gu bottom",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2014_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2015 Roger Johnson, Alex Jones/2015 Nationals West and East.pdf",
+    "page": 1,
+    "name": "2015_both",
+    "map": true,
+    "preview": true,
+    "skip": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2015 Roger Johnson, Alex Jones/2015 West Split.pdf",
+    "page": 1,
+    "name": "2015_west",
+    "notes": "split from combined at 35gu, -24gu top",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2015_west/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2015 Roger Johnson, Alex Jones/2015 East Split.pdf",
+    "page": 1,
+    "name": "2015_east",
+    "notes": "split from combined at 35gu, -12gu top",
+    "map": true,
+    "preview": true,
+    "invert_finish_gate": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2015_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2015 Roger Johnson, Alex Jones/2015 Pro Cropped.pdf",
+    "page": 1,
+    "name": "2015_pro",
+    "notes": "course bottom-right of large page, keep right 64gu, keep bottom 44gu",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2015_pro/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2016 Marcus Meredith, John Hunter/2016 Nationals Courses.pdf",
+    "page": 1,
+    "name": "2016_both",
+    "map": true,
+    "preview": true,
+    "skip": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2016 Marcus Meredith, John Hunter/2016 West Cropped.pdf",
+    "page": 1,
+    "name": "2016_west",
+    "notes": "-12gu top",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2016_west/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2016 Marcus Meredith, John Hunter/2016 East Cropped.pdf",
+    "page": 1,
+    "name": "2016_east",
+    "notes": "-75pt left (East and West Course Set Up Maps p2)",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2016_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2016 Marcus Meredith, John Hunter/3.) 2016 CAM Set Up.pdf",
+    "page": 1,
+    "name": "2016_cam",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2016_cam/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2017 Roger Johnson, Bryan Hayes/Corn Set Up Map.pdf",
+    "page": 1,
+    "name": "2017_west",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2017_west/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2017 Roger Johnson, Bryan Hayes/Scoundrels Set Up Map.pdf",
+    "page": 1,
+    "name": "2017_east",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2017_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2017 Roger Johnson, Bryan Hayes/2017 CAM Nationals Setup Map.pdf",
+    "page": 1,
+    "name": "2017_cam",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2017_cam/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2018 Vivek Goel, Karen Babb/2018 Nationals Courses.pdf",
+    "page": 2,
+    "name": "2018_west",
+    "map": true,
+    "preview": true,
+    "invert_start_gate": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2018_west/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2018 Vivek Goel, Karen Babb/2018 East Cropped.pdf",
+    "page": 3,
+    "name": "2018_east",
+    "notes": "-3gu left",
+    "map": true,
+    "preview": true,
+    "invert_start_gate": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2018_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2018 Vivek Goel, Karen Babb/2018 CAM Nationals Setup Map.pdf",
+    "page": 1,
+    "name": "2018_cam",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2018_cam/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2019 Jason Frank, Michael Feldpusch/2019 Nationals Courses.pdf",
+    "page": 1,
+    "name": "2019_overview",
+    "map": true,
+    "preview": true,
+    "skip": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2019 Jason Frank, Michael Feldpusch/2019 West Cropped2.pdf",
+    "page": 2,
+    "name": "2019_west",
+    "notes": "-14gu top, full bottom",
+    "map": true,
+    "preview": true,
+    "snap": false,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2019_west/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2019 Jason Frank, Michael Feldpusch/2019 Nationals Courses.pdf",
+    "page": 3,
+    "name": "2019_east",
+    "map": true,
+    "preview": true,
+    "snap": false,
+    "course": true,
+    "timing_start_cones": [
+      109,
+      110,
+      111,
+      112
+    ],
+    "timing_end_cones": [
+      518,
+      519,
+      520,
+      521
+    ],
+    "corrected_json": "generated/solonats/solonats_2019_east/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2021 Dave Marcus, Kerry Coughlin/2021 Nationals Courses.pdf",
+    "page": 1,
+    "name": "2021_overview",
+    "map": true,
+    "preview": true,
+    "skip": true
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2021 Dave Marcus, Kerry Coughlin/2021 West Cropped.pdf",
+    "page": 2,
+    "name": "2021_west",
+    "notes": "-10gu top",
+    "map": true,
+    "preview": true,
+    "invert_start_gate": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2021_west/project.json"
+  },
+  {
+    "pdf": "SoloNationals/1.) SoloNationals/LincolnAirpark2009-2018/2021 Dave Marcus, Kerry Coughlin/2021 East Cropped.pdf",
+    "page": 3,
+    "name": "2021_east",
+    "notes": "-11gu top",
+    "map": true,
+    "preview": true,
+    "course": true,
+    "corrected_json": "generated/solonats/solonats_2021_east/project.json"
+  }
+]

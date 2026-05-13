@@ -12,9 +12,18 @@ Output goes to <project_root>/blender/.
 import sys
 import os
 import math
+import shutil
 import argparse
 import bpy
 import bmesh
+
+# DDS textures to copy from rem_gymkhana template into every flat project.
+# Path is relative to this script's directory.
+_TEMPLATE_TEXTURE_SRC = os.path.join(
+    os.path.dirname(__file__), 'templates', 'rem_gymkhana', 'blender', 'texture'
+)
+_TEXTURES_TO_COPY = ['Cone.dds', 'Grass.dds', 'ConcreteWall.dds', 'NULL.dds', 'Reflector.dds',
+                     'Asphalt_color.dds']
 
 
 # ── Parse args ────────────────────────────────────────────────────────────────
@@ -44,11 +53,23 @@ def clear_scene():
             bpy.data.meshes.remove(block)
 
 
-def make_material(name, color_rgba):
+def make_material(name, color_rgba, tex_path=None):
     mat = bpy.data.materials.get(name)
     if mat is None:
         mat = bpy.data.materials.new(name)
     mat.diffuse_color = color_rgba
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out  = nt.nodes.new('ShaderNodeOutputMaterial')
+    bsdf = nt.nodes.new('ShaderNodeBsdfPrincipled')
+    nt.links.new(bsdf.outputs['BSDF'], out.inputs['Surface'])
+    if tex_path and os.path.isfile(tex_path):
+        img  = bpy.data.images.load(tex_path, check_existing=True)
+        img.filepath = f'//texture/{os.path.basename(tex_path)}'
+        tex  = nt.nodes.new('ShaderNodeTexImage')
+        tex.image = img
+        nt.links.new(tex.outputs['Color'], bsdf.inputs['Base Color'])
     return mat
 
 
@@ -216,6 +237,62 @@ def make_empty(name, location, rotation=None):
     return empty
 
 
+def write_fbx_ini(fbx_path):
+    """Write a ksEditor shader-assignment file (.fbx.ini) alongside the FBX.
+
+    Covers the materials created by create_flat_template: ROAD, Grass,
+    ConcreteWall, Cone, Null.  ksEditor merges this with any object-level
+    sections it generates itself, so we only need the MATERIAL_LIST block.
+    """
+    def _mat(idx, name, shader, vars_, resources):
+        lines = [
+            f'[MATERIAL_{idx}]',
+            f'NAME={name}',
+            f'SHADER={shader}',
+            'ALPHABLEND=0', 'ALPHATEST=0', 'DEPTHMODE=0',
+            f'VARCOUNT={len(vars_)}',
+        ]
+        for vi, (vname, f1) in enumerate(vars_):
+            lines += [
+                f'VAR_{vi}_NAME={vname}',
+                f'VAR_{vi}_FLOAT1={f1}',
+                f'VAR_{vi}_FLOAT2=0,0',
+                f'VAR_{vi}_FLOAT3=0,0,0',
+                f'VAR_{vi}_FLOAT4=0,0,0,0',
+            ]
+        lines.append(f'RESCOUNT={len(resources)}')
+        for ri, (rname, slot, tex) in enumerate(resources):
+            lines += [
+                f'RES_{ri}_NAME={rname}',
+                f'RES_{ri}_SLOT={slot}',
+                f'RES_{ri}_TEXTURE={tex}',
+            ]
+        return lines
+
+    _std_vars = [
+        ('ksAmbient', 0.2), ('ksDiffuse', 0.2), ('ksSpecular', 0.01),
+        ('ksSpecularEXP', 100), ('ksEmissive', 0), ('ksAlphaRef', 0),
+    ]
+    _diff_res = lambda tex: [('txDiffuse', 0, tex)]
+
+    materials = [
+        _mat(0, 'ROAD',         'ksPerPixel', _std_vars, _diff_res('Asphalt_color.dds')),
+        _mat(1, 'Grass',        'ksPerPixel', _std_vars, _diff_res('Grass.dds')),
+        _mat(2, 'ConcreteWall', 'ksPerPixel', _std_vars, _diff_res('ConcreteWall.dds')),
+        _mat(3, 'Cone',         'ksPerPixel', _std_vars, _diff_res('Cone.dds')),
+        _mat(4, 'Null',         'ksPerPixel', _std_vars, _diff_res('NULL.dds')),
+    ]
+
+    fbx_name = os.path.basename(fbx_path)
+    ini_path = fbx_path + '.ini'
+    with open(ini_path, 'w') as f:
+        f.write('[HEADER]\nVERSION=4\nDLC_KEY=0\nUSERNAME=\nDATE=\nMD5_HASH=\n\n')
+        f.write(f'[MATERIAL_LIST]\nCOUNT={len(materials)}\n\n')
+        for mat_lines in materials:
+            f.write('\n'.join(mat_lines) + '\n\n')
+    print(f"  FBX.INI: {os.path.relpath(ini_path, os.path.dirname(os.path.dirname(fbx_path)))}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -238,29 +315,38 @@ def main():
     # ── Clear default scene ────────────────────────────────────────────────────
     clear_scene()
 
+    # ── Copy DDS textures into blender/texture/ ───────────────────────────────
+    tex_dir = os.path.join(blender_dir, 'texture')
+    os.makedirs(tex_dir, exist_ok=True)
+    for fname in _TEXTURES_TO_COPY:
+        src = os.path.join(_TEMPLATE_TEXTURE_SRC, fname)
+        dst = os.path.join(tex_dir, fname)
+        if os.path.isfile(src) and not os.path.isfile(dst):
+            shutil.copy2(src, dst)
+            print(f"  Copied texture: {fname}")
+
+    def tex(fname):
+        return os.path.join(tex_dir, fname)
+
     # ── Materials ─────────────────────────────────────────────────────────────
-    mat_road  = make_material('ROAD',         (0.15, 0.15, 0.15, 1.0))
-    mat_grass = make_material('Grass',        (0.13, 0.40, 0.08, 1.0))
-    mat_wall  = make_material('ConcreteWall', (0.70, 0.70, 0.70, 1.0))
-    mat_cone  = make_material('Cone',         (0.90, 0.35, 0.00, 1.0))
-    mat_null = make_material('Null',          (0.00, 0.00, 0.00, 1.0))
+    mat_road  = make_material('ROAD',         (0.15, 0.15, 0.15, 1.0))   # chalk applied later
+    mat_grass = make_material('Grass',        (0.13, 0.40, 0.08, 1.0), tex_path=tex('Grass.dds'))
+    mat_wall  = make_material('ConcreteWall', (0.70, 0.70, 0.70, 1.0), tex_path=tex('ConcreteWall.dds'))
+    mat_cone  = make_material('Cone',         (0.90, 0.35, 0.00, 1.0), tex_path=tex('Cone.dds'))
+    mat_null  = make_material('Null',         (0.00, 0.00, 0.00, 1.0))
     mat_null.use_fake_user = True   # prevent orphan purge on save (Null is never assigned)
 
     # ── Road plane ────────────────────────────────────────────────────────────
     make_plane('1ROAD0', road_w, road_l, z=0.0, mat=mat_road)
     print(f"  1ROAD0: {road_w}m x {road_l}m")
 
-    # ── Grass plane (road + 50 m padding each side = +100 total) ──────────────
-    grass_w = road_w + 100.0
-    grass_l = road_l + 100.0
-    make_plane('1GRASS0', grass_w, grass_l, z=0.0, mat=mat_grass)
-    print(f"  1GRASS0: {grass_w}m x {grass_l}m")
+    # No separate 1GRASS0 plane — Terrain handles the background.
 
     # ── Terrain (slightly below road to avoid z-fighting) ─────────────────────
     terrain_w = road_w + 200.0
     terrain_l = road_l + 200.0
-    make_plane('Terrain', terrain_w, terrain_l, z=-0.05, mat=mat_grass)
-    print(f"  Terrain: {terrain_w}m x {terrain_l}m at Z=-0.05")
+    make_plane('Terrain', terrain_w, terrain_l, z=-0.30, mat=mat_grass)
+    print(f"  Terrain: {terrain_w}m x {terrain_l}m at Z=-0.30")
 
     # ── Perimeter wall ────────────────────────────────────────────────────────
     make_wall('1WALL0', road_w, road_l, wall_thickness=0.5, wall_height=2.0, mat=mat_wall)
@@ -285,15 +371,26 @@ def main():
     print(f"  Timing empties: AC_TIME_0/1 L/R at Y=±{gate_y}")
 
     # ── Export FBX ────────────────────────────────────────────────────────────
+    # Use absolute paths so path_mode='COPY' can locate the texture files,
+    # then restore Windows-relative paths before saving the .blend.
     print(f"Exporting FBX: {fbx_path}")
+    for _img in bpy.data.images:
+        if _img.filepath:
+            _img.filepath = os.path.abspath(bpy.path.abspath(_img.filepath))
     bpy.ops.export_scene.fbx(
-        filepath=fbx_path,
+        filepath=os.path.abspath(fbx_path),
         object_types={'MESH', 'EMPTY'},
         global_scale=1.0,
         apply_scale_options='FBX_SCALE_ALL',
         use_selection=False,
-        path_mode='AUTO',
+        path_mode='COPY',
+        embed_textures=False,
     )
+    for _img in bpy.data.images:
+        if _img.filepath and not _img.filepath.startswith('//'):
+            _img.filepath = f'//texture/{os.path.basename(_img.filepath)}'
+
+    write_fbx_ini(fbx_path)
 
     # ── Save .blend ───────────────────────────────────────────────────────────
     print(f"Saving blend: {blend_path}")
