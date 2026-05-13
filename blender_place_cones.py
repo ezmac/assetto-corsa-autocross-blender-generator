@@ -57,6 +57,55 @@ start_gate    = data.get('timing_start_gate')   # {"a": [bx,by], "b": [bx,by]} o
 finish_gate   = data.get('timing_end_gate')
 stage_cone_pos = data.get('stage_cone_pos')     # [bx, by] of cones 100-103 centroid, or None
 
+# ── GCP affine alignment ──────────────────────────────────────────────────────
+# If the JSON has 3 GCP entries and all 3 scene objects exist, solve a 6-parameter
+# affine from JSON coords → Blender world space and remap all positions.
+# blues[0] → TOP_LEFT, blues[1] → TOP_RIGHT, blues[2] → BOTTOM_RIGHT
+_GCP_NAMES = [
+    "AC_POBJECT_GCP_P_TOP_LEFT",
+    "AC_POBJECT_GCP_P_TOP_RIGHT",
+    "AC_POBJECT_GCP_P_BOTTOM_RIGHT",
+]
+_blues = data.get("gcp", [])
+if len(_blues) == 3:
+    import numpy as _np
+    _scene_pts = []
+    for _gname in _GCP_NAMES:
+        _gobj = bpy.data.objects.get(_gname)
+        if _gobj is None:
+            print(f"GCP object '{_gname}' not found — skipping affine alignment")
+            _scene_pts = []
+            break
+        _scene_pts.append((_gobj.location.x, _gobj.location.y))
+
+    if len(_scene_pts) == 3:
+        _src = _np.array([[g["bx"], g["by"]] for g in _blues], dtype=float)
+        _dst = _np.array(_scene_pts, dtype=float)
+        _P   = _np.column_stack([_src, _np.ones(3)])
+        _ax  = _np.linalg.solve(_P, _dst[:, 0])
+        _ay  = _np.linalg.solve(_P, _dst[:, 1])
+
+        def _gcp_affine(bx, by):
+            return (_ax[0]*bx + _ax[1]*by + _ax[2],
+                    _ay[0]*bx + _ay[1]*by + _ay[2])
+
+        for _c in standing + pointers + greens + reds:
+            _c["bx"], _c["by"] = _gcp_affine(_c["bx"], _c["by"])
+        if stage_cone_pos:
+            stage_cone_pos[0], stage_cone_pos[1] = _gcp_affine(stage_cone_pos[0], stage_cone_pos[1])
+        if start_gate:
+            start_gate["a"][0], start_gate["a"][1] = _gcp_affine(*start_gate["a"])
+            start_gate["b"][0], start_gate["b"][1] = _gcp_affine(*start_gate["b"])
+        if finish_gate:
+            finish_gate["a"][0], finish_gate["a"][1] = _gcp_affine(*finish_gate["a"])
+            finish_gate["b"][0], finish_gate["b"][1] = _gcp_affine(*finish_gate["b"])
+        print(f"GCP affine applied: {[n.split('_')[-1] for n in _GCP_NAMES]}")
+        print(f"  ax={[round(v,6) for v in _ax]}  ay={[round(v,6) for v in _ay]}")
+elif _blues:
+    print(f"GCP: {len(_blues)} entries found (need exactly 3) — skipping affine alignment")
+else:
+    print("No GCP data in JSON — using bx/by as Blender world coords directly")
+
 # Compute bounds if missing (old detect_cones.py format)
 if 'bounds' not in data:
     all_pts = standing + pointers + greens + reds

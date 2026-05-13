@@ -445,7 +445,7 @@ def _convert_editor_json(editor_data, auto_data):
     def to_blender(x, y):
         return round(x * scale + ox, 3), round(-y * scale + oy, 3)
 
-    standing, pointers, timing_start, timing_end, stage_cones = [], [], [], [], []
+    standing, pointers, timing_start, timing_end, stage_cones, gcp_raw = [], [], [], [], [], []
     for cone in editor_data.get('cones', []):
         if cone.get('noExport'):
             continue
@@ -464,6 +464,21 @@ def _convert_editor_json(editor_data, auto_data):
             timing_end.append(entry)
         elif ct == 'car_start':
             stage_cones.append([bx, by])
+        elif ct == 'gcp':
+            gcp_raw.append({'bx': bx, 'by': by})
+
+    # Deduplicate near-identical GCPs (within 2 m) then cap at 3 (TOP_LEFT/TOP_RIGHT/BOTTOM_RIGHT).
+    MIN_GCP_DIST_SQ = 4.0
+    gcp_entries = []
+    for g in gcp_raw:
+        if any((g['bx'] - e['bx'])**2 + (g['by'] - e['by'])**2 < MIN_GCP_DIST_SQ
+               for e in gcp_entries):
+            print(f"  GCP dedup: dropped near-duplicate ({g['bx']}, {g['by']})")
+            continue
+        gcp_entries.append(g)
+    if len(gcp_entries) > 3:
+        print(f"  GCP: {len(gcp_entries)} unique GCPs found; using first 3")
+        gcp_entries = gcp_entries[:3]
 
     if stage_cones:
         stage_cone_pos = [
@@ -499,7 +514,7 @@ def _convert_editor_json(editor_data, auto_data):
         'timing_start_gate': auto_data.get('timing_start_gate'),
         'timing_end_gate':   auto_data.get('timing_end_gate'),
         'stage_cone_pos':   stage_cone_pos,
-        'gcp':              auto_data.get('gcp', []),
+        'gcp':              gcp_entries or auto_data.get('gcp', []),
         'n_standing':       len(standing),
         'n_pointer':        len(pointers),
         'n_timing_start':   len(timing_start),
@@ -829,6 +844,18 @@ def main():
     json_path = os.path.abspath(json_path)
     if not os.path.isfile(json_path):
         sys.exit(f"ERROR: JSON not found: {json_path}")
+
+    # Convert editor-format project.json {cones, scale, ...} to pipeline format
+    # {standing, pointers, bounds, ...} if needed, writing the result to out_json.
+    with open(json_path) as f:
+        _raw = json.load(f)
+    if 'cones' in _raw and 'standing' not in _raw:
+        _raw = _convert_editor_json(_raw, {})
+        os.makedirs(debug_dir, exist_ok=True)
+        with open(out_json, 'w') as f:
+            json.dump(_raw, f, indent=2)
+        print(f"Converted editor JSON → {out_json}")
+        json_path = out_json
 
     # Regenerate chalk PNG from PDF source to ensure full-page alignment.
     # This is needed because chalk was previously rendered with tight crop (centered=True).
