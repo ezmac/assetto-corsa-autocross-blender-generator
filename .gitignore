@@ -1,5 +1,4 @@
 generated/
 templates/
-CLAUDE.md
 __pycache__/
 *.log
