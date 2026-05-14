@@ -72,7 +72,7 @@ MIN_BLOB_PX = 3
 
 # Pointer snap — physically correct spacing from the standing cone edge.
 # Gap is the clear space between adjacent cone surfaces (tip-to-base edge).
-POINTER_SNAP_GAP_M = 0.0762        # 3 inches tip-to-edge gap
+POINTER_SNAP_GAP_M = 0.2286        # 9 inches tip-to-edge gap
 # Cone template dimensions (must match AC_POBJECT_MovableCone mesh in template).
 CONE_BASE_RADIUS_M = 0.1397        # 5.5"  (11" base diameter)
 CONE_HEIGHT_M      = 0.4318        # 17" tall
