@@ -22,8 +22,8 @@ Options:
     --preview PATH      Save annotated detection image (image/pdf mode)
     --map PATH          Save clean map PNG at 72 DPI (pdf mode only)
     --out-json PATH     Where to save detected JSON (default: generated/<name>/debug/<name>.json)
-    --snap-pointers        Enable pointer snapping (pdf mode only, off by default)
-    --snap-radius M        Max snap distance in metres (pdf mode only)
+    --snap-pointers        Enable pointer snapping (off by default)
+    --snap-radius M        Max snap distance in metres
     --invert-start-gate    Swap start gate endpoints (pdf mode only)
     --invert-finish-gate   Swap finish gate endpoints (pdf mode only)
 
@@ -68,6 +68,11 @@ SYSTEM_PYTHON   = sys.executable
 
 sys.path.insert(0, SCRIPT_DIR)
 import new_flat_project
+
+from track_core import convert_editor_json, get_dims_from_json, update_track_info, merge_corrected_json
+from solonats_batch import run_jobs, regen_chalk_png
+from detect_cones import (assign_pointer_facing, snap_pointers_to_standing,
+                           POINTER_SNAP_ANCHOR_RADIUS_M)
 
 DEFAULT_TEMPLATE = 'rem_gymkhana'
 
@@ -237,50 +242,6 @@ def setup_project(name, template_name):
     return dest_dir, blend_dst
 
 
-def update_track_info(dest_dir, name, json_path):
-    """Write cone count and lot size into ui_track.json description."""
-    with open(json_path) as f:
-        data = json.load(f)
-
-    standing = data.get('standing', [])
-    pointers = data.get('pointers', [])
-
-    if 'bounds' in data:
-        b = dict(data['bounds'])
-    else:
-        all_pts = standing + pointers + data.get('timing_start', []) + data.get('timing_end', [])
-        b = {
-            'xmin': min(c['bx'] for c in all_pts),
-            'xmax': max(c['bx'] for c in all_pts),
-            'ymin': min(c['by'] for c in all_pts),
-            'ymax': max(c['by'] for c in all_pts),
-        }
-
-    stage = data.get('stage_cone_pos')
-    if stage:
-        b['xmin'] = min(b['xmin'], stage[0])
-        b['xmax'] = max(b['xmax'], stage[0])
-        b['ymin'] = min(b['ymin'], stage[1])
-        b['ymax'] = max(b['ymax'], stage[1])
-
-    lot_w = b['xmax'] - b['xmin']
-    lot_h = b['ymax'] - b['ymin']
-    desc = (f"{len(standing)} standing + {len(pointers)} pointer cones. "
-            f"Lot: {lot_w:.0f}m x {lot_h:.0f}m.")
-
-    ui_path = os.path.join(dest_dir, name, 'ui', 'ui_track.json')
-    if not os.path.isfile(ui_path):
-        print(f"WARNING: ui_track.json not found at {ui_path}")
-        return
-
-    with open(ui_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    updated = re.sub(r'("description"\s*:\s*)"[^"]*"', rf'\1"{desc}"', content)
-    with open(ui_path, 'w', encoding='utf-8') as f:
-        f.write(updated)
-    print(f"ui_track.json: description -> \"{desc}\"")
-
-
 def detect_cones(image_path, out_json, extra_args):
     """Run detect_cones.py on an image to produce a cone JSON."""
     cmd = [
@@ -315,37 +276,6 @@ def detect_cones_pdf(pdf_path, page, out_json, preview_path, map_path, extra_arg
     if result.returncode != 0:
         sys.exit(f"ERROR: detect_cones_pdf.py failed (exit {result.returncode})")
     print(f"Cone JSON: {out_json}")
-
-
-def get_dims_from_json(json_path, padding=20.0):
-    """Return (width, length) in metres from cone bounds in JSON, with padding on each side.
-
-    If the JSON transform includes page_w_pt / page_h_pt (solonats flat maps), the full
-    page dimensions are used and padding is ignored — the road covers the whole site.
-    """
-    with open(json_path) as f:
-        data = json.load(f)
-    t = data.get('transform', {})
-    if t.get('page_w_pt') and t.get('page_h_pt'):
-        scale = t.get('scale', 0.3048)
-        width  = round(t['page_w_pt']  * scale, 1)
-        length = round(t['page_h_pt'] * scale, 1)
-        return width, length
-    b = data.get('bounds')
-    if not b:
-        all_pts = (data.get('standing', []) + data.get('pointers', [])
-                   + data.get('timing_start', []) + data.get('timing_end', []))
-        if not all_pts:
-            return 120.0, 80.0
-        b = {
-            'xmin': min(c['bx'] for c in all_pts),
-            'xmax': max(c['bx'] for c in all_pts),
-            'ymin': min(c['by'] for c in all_pts),
-            'ymax': max(c['by'] for c in all_pts),
-        }
-    width  = round((b['xmax'] - b['xmin']) + padding * 2, 1)
-    length = round((b['ymax'] - b['ymin']) + padding * 2, 1)
-    return width, length
 
 
 def _run_detection(args, out_json, debug_dir):
@@ -435,265 +365,6 @@ def run_blender(blender_exe, blend_path, json_path, flat, fbx_path):
 SOLONATS_DETECT_DIR = os.path.join('generated', 'solonats')
 
 
-def _convert_editor_json(editor_data, auto_data):
-    """Convert editor project.json format {cones, scale, siteW, siteH} to pipeline format."""
-    t = auto_data.get('transform', {})
-    scale = t.get('scale', editor_data.get('scale', 0.3048))
-    ox    = t.get('ox', 0.0)
-    oy    = t.get('oy', 0.0)
-
-    def to_blender(x, y):
-        return round(x * scale + ox, 3), round(-y * scale + oy, 3)
-
-    standing, pointers, timing_start, timing_end, stage_cones, gcp_raw = [], [], [], [], [], []
-    for cone in editor_data.get('cones', []):
-        if cone.get('noExport'):
-            continue
-        ct = cone.get('coneType', 'standing')
-        bx, by = to_blender(cone['x'], cone['y'])
-        entry = {'bx': bx, 'by': by, 'type': ct, 'size': 1}
-        if ct == 'standing':
-            standing.append(entry)
-        elif ct == 'pointer':
-            # Editor rotation is CCW in screen (y-down) space; negate to get Blender facing_deg.
-            entry['facing_deg'] = round(math.degrees(-cone.get('rotation', 0)), 1)
-            pointers.append(entry)
-        elif ct == 'timing_start':
-            timing_start.append(entry)
-        elif ct == 'timing_end':
-            timing_end.append(entry)
-        elif ct == 'car_start':
-            stage_cones.append([bx, by])
-        elif ct == 'gcp':
-            gcp_raw.append({'bx': bx, 'by': by})
-
-    # Deduplicate near-identical GCPs (within 2 m) then cap at 3 (TOP_LEFT/TOP_RIGHT/BOTTOM_RIGHT).
-    MIN_GCP_DIST_SQ = 4.0
-    gcp_entries = []
-    for g in gcp_raw:
-        if any((g['bx'] - e['bx'])**2 + (g['by'] - e['by'])**2 < MIN_GCP_DIST_SQ
-               for e in gcp_entries):
-            print(f"  GCP dedup: dropped near-duplicate ({g['bx']}, {g['by']})")
-            continue
-        gcp_entries.append(g)
-    if len(gcp_entries) > 3:
-        print(f"  GCP: {len(gcp_entries)} unique GCPs found; using first 3")
-        gcp_entries = gcp_entries[:3]
-
-    if stage_cones:
-        stage_cone_pos = [
-            round(sum(c[0] for c in stage_cones) / len(stage_cones), 3),
-            round(sum(c[1] for c in stage_cones) / len(stage_cones), 3),
-        ]
-    else:
-        stage_cone_pos = auto_data.get('stage_cone_pos')
-
-    all_pts = standing + pointers + timing_start + timing_end
-    if all_pts:
-        bounds = {
-            'xmin': min(c['bx'] for c in all_pts),
-            'xmax': max(c['bx'] for c in all_pts),
-            'ymin': min(c['by'] for c in all_pts),
-            'ymax': max(c['by'] for c in all_pts),
-        }
-    else:
-        bounds = auto_data.get('bounds')
-
-    # Fill page dimensions into transform from auto JSON if absent
-    for key in ('page_w_pt', 'page_h_pt'):
-        if key not in t and key in auto_data.get('transform', {}):
-            t[key] = auto_data['transform'][key]
-
-    return {
-        'transform':        t,
-        'bounds':           bounds,
-        'standing':         standing,
-        'pointers':         pointers,
-        'timing_start':     timing_start,
-        'timing_end':       timing_end,
-        'timing_start_gate': auto_data.get('timing_start_gate'),
-        'timing_end_gate':   auto_data.get('timing_end_gate'),
-        'stage_cone_pos':   stage_cone_pos,
-        'gcp':              gcp_entries or auto_data.get('gcp', []),
-        'n_standing':       len(standing),
-        'n_pointer':        len(pointers),
-        'n_timing_start':   len(timing_start),
-        'n_timing_end':     len(timing_end),
-    }
-
-
-def _merge_corrected_json(corrected_path, auto_path, out_path):
-    """Write out_path = corrected JSON converted to pipeline format, with transform from auto_path."""
-    with open(corrected_path) as f:
-        data = json.load(f)
-    auto = {}
-    if os.path.isfile(auto_path):
-        with open(auto_path) as f:
-            auto = json.load(f)
-
-    if 'cones' in data and 'standing' not in data:
-        data = _convert_editor_json(data, auto)
-    else:
-        t = data.setdefault('transform', {})
-        for key in ('page_w_pt', 'page_h_pt'):
-            if key not in t and key in auto.get('transform', {}):
-                t[key] = auto['transform'][key]
-
-    with open(out_path, 'w') as f:
-        json.dump(data, f, indent=2)
-
-
-def _regen_chalk_png(job, chalk_path):
-    """Regenerate chalk PNG from the original PDF using full-page rendering."""
-    pdf_path = job.get('pdf')
-    page_num = job.get('page', 1)
-    if not pdf_path or not os.path.isfile(pdf_path):
-        return False
-    try:
-        import fitz
-        from detect_chalk_lines import extract_chalk_paths, render_chalk_mask
-        doc = fitz.open(pdf_path)
-        page = doc[page_num - 1]
-        chalk_paths = extract_chalk_paths(page)
-        line_px = max(1, round(job.get('chalk_width', 5.0) / 12.0))
-        chalk_img = render_chalk_mask(page, chalk_paths, line_width_px=line_px, dpi=72, centered=False)
-        chalk_img.save(chalk_path)
-        print(f"  Chalk PNG: {chalk_path} ({chalk_img.width}×{chalk_img.height} px)")
-        return True
-    except Exception as e:
-        print(f"  WARNING: could not regenerate chalk PNG: {e}", file=sys.stderr)
-        return False
-
-
-def _patch_solonats_metadata(dest_dir, track_name, designers, map_image_path):
-    """Append designer credit and ezmac note to description; set ui/preview.png to the map image."""
-    ui_path = os.path.join(dest_dir, track_name, 'ui', 'ui_track.json')
-    if not os.path.isfile(ui_path):
-        print(f"WARNING: ui_track.json not found at {ui_path}")
-        return
-
-    with open(ui_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    def _append(m):
-        existing = m.group(1)
-        suffix = (f' Designed by {designers}.' if designers else '') + ' Generated by ezmac.'
-        return f'"description": "{existing}{suffix}"'
-
-    updated = re.sub(r'"description"\s*:\s*"([^"]*)"', _append, content)
-    with open(ui_path, 'w', encoding='utf-8') as f:
-        f.write(updated)
-    print(f"ui_track.json: appended credit (designers={designers!r})")
-
-    if map_image_path and os.path.isfile(map_image_path):
-        preview_path = os.path.join(dest_dir, track_name, 'ui', 'preview.png')
-        shutil.copy2(map_image_path, preview_path)
-        print(f"ui/preview.png <- {os.path.basename(map_image_path)}")
-    else:
-        print(f"WARNING: map image not found, preview.png not updated ({map_image_path})")
-
-
-def run_jobs(jobs_path, only_names, fbx, blender_exe, generated_dir=None):
-    """Process a jobs JSON file, building each solonats track."""
-    with open(jobs_path) as f:
-        jobs = json.load(f)
-
-    only = set(only_names) if only_names else None
-    errors = 0
-    for job in jobs:
-        name = job.get('name', '?')
-        if job.get('skip'):
-            print(f"  Skipping {name} (skip=true)")
-            continue
-        if only and name not in only:
-            continue
-
-        track_name = f'solonats_{name}'
-        job_dir    = os.path.join(SOLONATS_DETECT_DIR, f'solonats_{name}')
-        json_path  = os.path.join(job_dir, f'{name}.json')
-
-        # Check for corrected JSON override
-        if job.get('corrected_json'):
-            corrected_path = job['corrected_json']
-            if not os.path.isfile(corrected_path):
-                print(f"ERROR: {name}: corrected_json specified but file not found: {corrected_path}", file=sys.stderr)
-                errors += 1
-                continue
-            print(f"  Using corrected JSON: {corrected_path}")
-            # Merge page_w_pt/page_h_pt from auto-generated JSON if absent in corrected JSON,
-            # then regenerate chalk PNG so it aligns with the full-page UV mapping in Blender.
-            merged_path = os.path.join(job_dir, f'{name}_merged.json')
-            _merge_corrected_json(corrected_path, json_path, merged_path)
-            chalk_path = os.path.splitext(merged_path)[0] + '_chalk.png'
-            if not _regen_chalk_png(job, chalk_path):
-                # Fall back to copying any existing chalk PNG
-                existing = os.path.join(job_dir, f'{name}_chalk.png')
-                if os.path.isfile(existing):
-                    import shutil
-                    shutil.copy2(existing, chalk_path)
-            json_path = merged_path
-
-        if not os.path.isfile(json_path):
-            print(f"ERROR: {name}: detected JSON not found at {json_path} — "
-                  f"run run_pdf_detection.py first", file=sys.stderr)
-            errors += 1
-            continue
-
-        # Regenerate chalk PNG if it doesn't exist or is stale, ensuring full-page alignment
-        chalk_path = os.path.splitext(json_path)[0] + '_chalk.png'
-        json_mtime = os.path.getmtime(json_path)
-        chalk_missing = not os.path.isfile(chalk_path)
-        chalk_stale = os.path.isfile(chalk_path) and os.path.getmtime(chalk_path) < json_mtime
-        if chalk_missing or chalk_stale:
-            _regen_chalk_png(job, chalk_path)
-
-        print(f"\n{'='*65}")
-        print(f"  Track: {track_name}")
-        print(f"  JSON:  {json_path}")
-        print(f"{'='*65}\n")
-
-        # Build sys.argv for the single-track main() to parse
-        argv = [
-            sys.argv[0],
-            '--name',        track_name,
-            '--json',        json_path,
-            '--no-template',
-        ]
-        if fbx:
-            argv.append('--fbx')
-        if blender_exe:
-            argv += ['--blender', blender_exe]
-        if generated_dir:
-            argv += ['--generated-dir', generated_dir]
-
-        old_argv = sys.argv
-        sys.argv = argv
-        failed = False
-        try:
-            main()
-        except SystemExit as e:
-            if e.code and e.code != 0:
-                print(f"ERROR building {track_name}: exit {e.code}", file=sys.stderr)
-                errors += 1
-                failed = True
-        finally:
-            sys.argv = old_argv
-
-        if not failed:
-            # Extract designers from the PDF parent folder (e.g. "2009 Chris Cox, Michael Feldpusch")
-            pdf_path = job.get('pdf', '')
-            designers = ''
-            if pdf_path:
-                folder = os.path.basename(os.path.dirname(pdf_path))
-                designers = re.sub(r'^\d{4}\s+', '', folder)
-            map_image = os.path.join(job_dir, f'{name}_map.png')
-            track_dest = os.path.join(generated_dir or GENERATED_DIR, track_name)
-            _patch_solonats_metadata(track_dest, track_name, designers, map_image)
-
-    if errors:
-        sys.exit(f"{errors} job(s) failed")
-
-
 def main():
     # ── Quick exits before full arg parsing ───────────────────────────────────
     if '--list-templates' in sys.argv:
@@ -713,7 +384,7 @@ def main():
         jp.add_argument('--blender',       default=None)
         jp.add_argument('--generated-dir', default=GENERATED_DIR, dest='generated_dir')
         ja, _ = jp.parse_known_args()
-        run_jobs(ja.jobs, ja.only, ja.fbx, ja.blender, ja.generated_dir)
+        run_jobs(ja.jobs, ja.only, ja.fbx, ja.blender, ja.generated_dir, build_fn=main)
         return
 
     # ── Parse args ────────────────────────────────────────────────────────────
@@ -753,9 +424,9 @@ def main():
     p.add_argument('--map',       default=None,
                    help='Save clean map PNG at 72 DPI (pdf mode only)')
     p.add_argument('--snap-pointers', action='store_true', default=False,
-                   help='Enable pointer snapping (pdf mode only, off by default)')
+                   help='Snap pointer cones to physically correct distance from their nearest standing cone')
     p.add_argument('--snap-radius', type=float, default=None, metavar='M',
-                   help='Max snap distance in metres (pdf mode only)')
+                   help=f'Max anchor-pointer distance for snapping (default: {POINTER_SNAP_ANCHOR_RADIUS_M}m)')
     p.add_argument('--invert-start-gate', action='store_true', default=False,
                    help='Swap start gate endpoints (pdf mode only)')
     p.add_argument('--invert-finish-gate', action='store_true', default=False,
@@ -850,17 +521,40 @@ def main():
     with open(json_path) as f:
         _raw = json.load(f)
     if 'cones' in _raw and 'standing' not in _raw:
-        _raw = _convert_editor_json(_raw, {})
+        _raw = convert_editor_json(_raw, {})
         os.makedirs(debug_dir, exist_ok=True)
         with open(out_json, 'w') as f:
             json.dump(_raw, f, indent=2)
         print(f"Converted editor JSON → {out_json}")
         json_path = out_json
 
+    # Snap pointers to physically correct positions relative to their nearest standing cone.
+    # For --json input this runs here; for --pdf it already ran inside detect_cones_pdf.py.
+    if args.snap_pointers and not args.pdf:
+        _standing = _raw.get('standing', [])
+        _pointers = _raw.get('pointers', [])
+        if _pointers and _standing:
+            assign_pointer_facing(_pointers, _standing)
+            _snap_r = args.snap_radius if args.snap_radius is not None else POINTER_SNAP_ANCHOR_RADIUS_M
+            _timing = _raw.get('timing_start', []) + _raw.get('timing_end', [])
+            n_snapped = snap_pointers_to_standing(
+                _pointers, _standing,
+                anchor_radius_m=_snap_r,
+                group_radius_m=_snap_r,
+                timing_cones=_timing or None,
+            )
+            print(f"  Snapped {n_snapped}/{len(_pointers)} pointers (radius={_snap_r}m)")
+            os.makedirs(debug_dir, exist_ok=True)
+            with open(out_json, 'w') as f:
+                json.dump(_raw, f, indent=2)
+            print(f"  Snapped JSON → {out_json}")
+            json_path = out_json
+        else:
+            print("  --snap-pointers: no pointers or standing cones to snap")
+
     # Regenerate chalk PNG from PDF source to ensure full-page alignment.
     # This is needed because chalk was previously rendered with tight crop (centered=True).
     chalk_path = os.path.splitext(json_path)[0] + '_chalk.png'
-    import re
     name_match = re.search(r'solonats_(\d{4}[_a-z]*)', json_path)
     if name_match:
         name_base = name_match.group(1)
@@ -870,7 +564,7 @@ def main():
             for job in jobs_data:
                 if job.get('name') == name_base:
                     if job.get('pdf'):
-                        _regen_chalk_png(job, chalk_path)
+                        regen_chalk_png(job, chalk_path)
                     break
 
     update_track_info(dest_dir, args.name, json_path)

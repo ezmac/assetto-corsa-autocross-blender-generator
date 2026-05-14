@@ -55,7 +55,11 @@ greens        = data.get('timing_start', [])
 reds          = data.get('timing_end',   [])
 start_gate    = data.get('timing_start_gate')   # {"a": [bx,by], "b": [bx,by]} or None
 finish_gate   = data.get('timing_end_gate')
-stage_cone_pos = data.get('stage_cone_pos')     # [bx, by] of cones 100-103 centroid, or None
+_scp = data.get('stage_cone_pos')
+# Normalise old [bx, by] array format to {"bx", "by", "facing_deg"} dict.
+if isinstance(_scp, list):
+    _scp = {'bx': _scp[0], 'by': _scp[1], 'facing_deg': None}
+stage_cone_pos = _scp  # {"bx", "by", "facing_deg"} or None
 
 # ── GCP affine alignment ──────────────────────────────────────────────────────
 # If the JSON has 3 GCP entries and all 3 scene objects exist, solve a 6-parameter
@@ -92,7 +96,7 @@ if len(_blues) == 3:
         for _c in standing + pointers + greens + reds:
             _c["bx"], _c["by"] = _gcp_affine(_c["bx"], _c["by"])
         if stage_cone_pos:
-            stage_cone_pos[0], stage_cone_pos[1] = _gcp_affine(stage_cone_pos[0], stage_cone_pos[1])
+            stage_cone_pos['bx'], stage_cone_pos['by'] = _gcp_affine(stage_cone_pos['bx'], stage_cone_pos['by'])
         if start_gate:
             start_gate["a"][0], start_gate["a"][1] = _gcp_affine(*start_gate["a"])
             start_gate["b"][0], start_gate["b"][1] = _gcp_affine(*start_gate["b"])
@@ -146,8 +150,8 @@ if FLAT:
         # UV mapping is world-position-based so expanding beyond the page is safe.
         if stage_cone_pos:
             _stage_pad = SPAWN_BACK_FROM_STAGE_M + 5.0
-            _need_w = (abs(stage_cone_pos[0] - road_cx) + _stage_pad) * 2
-            _need_h = (abs(stage_cone_pos[1] - road_cy) + _stage_pad) * 2
+            _need_w = (abs(stage_cone_pos['bx'] - road_cx) + _stage_pad) * 2
+            _need_h = (abs(stage_cone_pos['by'] - road_cy) + _stage_pad) * 2
             if _need_w > req_w or _need_h > req_h:
                 req_w = max(req_w, _need_w)
                 req_h = max(req_h, _need_h)
@@ -158,10 +162,10 @@ if FLAT:
         if stage_cone_pos:
             _stage_pad = SPAWN_BACK_FROM_STAGE_M + 5.0
             b = dict(b)
-            b['xmin'] = min(b['xmin'], stage_cone_pos[0] - _stage_pad)
-            b['xmax'] = max(b['xmax'], stage_cone_pos[0] + _stage_pad)
-            b['ymin'] = min(b['ymin'], stage_cone_pos[1] - _stage_pad)
-            b['ymax'] = max(b['ymax'], stage_cone_pos[1] + _stage_pad)
+            b['xmin'] = min(b['xmin'], stage_cone_pos['bx'] - _stage_pad)
+            b['xmax'] = max(b['xmax'], stage_cone_pos['bx'] + _stage_pad)
+            b['ymin'] = min(b['ymin'], stage_cone_pos['by'] - _stage_pad)
+            b['ymax'] = max(b['ymax'], stage_cone_pos['by'] + _stage_pad)
             cx = (b['xmin'] + b['xmax']) / 2
             cy = (b['ymin'] + b['ymax']) / 2
         req_w    = (b['xmax'] - b['xmin']) + 2 * PADDING
@@ -427,8 +431,8 @@ if has_start_gate and has_finish_gate:
     # Start: entry = away from stage cones (100-103) if available, else toward centroid
     if stage_cone_pos:
         # Stage is behind the start gate; negate so entry points away from stage (into course)
-        entry = -interior_perp(g0, g1, ref_x=stage_cone_pos[0], ref_y=stage_cone_pos[1])
-        print(f"  Start direction from stage_cone_pos ({stage_cone_pos[0]:.1f},{stage_cone_pos[1]:.1f})")
+        entry = -interior_perp(g0, g1, ref_x=stage_cone_pos['bx'], ref_y=stage_cone_pos['by'])
+        print(f"  Start direction from stage_cone_pos ({stage_cone_pos['bx']:.1f},{stage_cone_pos['by']:.1f})")
     else:
         entry = interior_perp(g0, g1)
         print(f"  Start direction from centroid ({cx:.1f},{cy:.1f})")
@@ -452,9 +456,9 @@ if has_start_gate and has_finish_gate:
     z_rot = math.atan2(entry.x, entry.y)
     rot   = (-math.pi/2, 0.0, z_rot)
     if stage_cone_pos:
-        spawn_x = stage_cone_pos[0] - entry.x * SPAWN_BACK_FROM_STAGE_M
-        spawn_y = stage_cone_pos[1] - entry.y * SPAWN_BACK_FROM_STAGE_M
-        print(f"  Spawn at stage_cone_pos ({stage_cone_pos[0]:.1f},{stage_cone_pos[1]:.1f})")
+        spawn_x = stage_cone_pos['bx'] - entry.x * SPAWN_BACK_FROM_STAGE_M
+        spawn_y = stage_cone_pos['by'] - entry.y * SPAWN_BACK_FROM_STAGE_M
+        print(f"  Spawn at stage_cone_pos ({stage_cone_pos['bx']:.1f},{stage_cone_pos['by']:.1f})")
     else:
         spawn_x = g_mid.x - entry.x * SPAWN_BACK_M
         spawn_y = g_mid.y - entry.y * SPAWN_BACK_M
@@ -478,9 +482,9 @@ elif has_start_gate:
     rot   = (-math.pi/2, 0, rz)
 
     if stage_cone_pos:
-        spawn_x = stage_cone_pos[0] - entry.x * SPAWN_BACK_FROM_STAGE_M
-        spawn_y = stage_cone_pos[1] - entry.y * SPAWN_BACK_FROM_STAGE_M
-        print(f"  Spawn at stage_cone_pos ({stage_cone_pos[0]:.1f},{stage_cone_pos[1]:.1f})")
+        spawn_x = stage_cone_pos['bx'] - entry.x * SPAWN_BACK_FROM_STAGE_M
+        spawn_y = stage_cone_pos['by'] - entry.y * SPAWN_BACK_FROM_STAGE_M
+        print(f"  Spawn at stage_cone_pos ({stage_cone_pos['bx']:.1f},{stage_cone_pos['by']:.1f})")
     else:
         spawn_x = g_mid.x - entry.x * SPAWN_BACK_M
         spawn_y = g_mid.y - entry.y * SPAWN_BACK_M
@@ -492,15 +496,21 @@ elif has_start_gate:
 
 else:
     if stage_cone_pos:
-        # No timing gates but we have a staging area — point spawn toward course centroid.
+        # No timing gates — use facing_deg from editor if present, else point toward centroid.
         from mathutils import Vector
-        to_cx   = Vector((cx - stage_cone_pos[0], cy - stage_cone_pos[1], 0)).normalized()
-        rz      = math.atan2(to_cx.x, to_cx.y)
-        spawn_x = stage_cone_pos[0] - to_cx.x * SPAWN_BACK_FROM_STAGE_M
-        spawn_y = stage_cone_pos[1] - to_cx.y * SPAWN_BACK_FROM_STAGE_M
+        _fd = stage_cone_pos.get('facing_deg')
+        if _fd is not None:
+            rz = math.radians(_fd)
+            spawn_dir = Vector((math.sin(rz), math.cos(rz), 0))
+            print(f"  Spawn at stage_cone_pos (no gates, facing_deg={_fd}°)")
+        else:
+            spawn_dir = Vector((cx - stage_cone_pos['bx'], cy - stage_cone_pos['by'], 0)).normalized()
+            rz = math.atan2(spawn_dir.x, spawn_dir.y)
+            print(f"  Spawn at stage_cone_pos (no gates)  heading={math.degrees(rz):.1f}°")
+        spawn_x = stage_cone_pos['bx'] - spawn_dir.x * SPAWN_BACK_FROM_STAGE_M
+        spawn_y = stage_cone_pos['by'] - spawn_dir.y * SPAWN_BACK_FROM_STAGE_M
         for n in ('AC_PIT_0', 'AC_START_0', 'AC_HOTLAP_START_0'):
             place_marker(n, spawn_x, spawn_y, z_offset=1.5, rot=(-math.pi/2, 0, rz))
-        print(f"  Spawn at stage_cone_pos (no gates)  heading={math.degrees(rz):.1f}°")
     else:
         print("No timing markers (no gate data in JSON)")
 

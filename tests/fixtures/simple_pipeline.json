@@ -1,0 +1,20 @@
+{
+  "standing": [
+    {"bx": 0.0, "by": 0.0, "type": "standing", "size": 1},
+    {"bx": 10.0, "by": 0.0, "type": "standing", "size": 1},
+    {"bx": 10.0, "by": 20.0, "type": "standing", "size": 1},
+    {"bx": 0.0, "by": 20.0, "type": "standing", "size": 1}
+  ],
+  "pointers": [
+    {"bx": 5.0, "by": 10.0, "type": "pointer", "size": 1, "facing_deg": 90.0}
+  ],
+  "timing_start": [],
+  "timing_end": [],
+  "gcp": [],
+  "bounds": {
+    "xmin": 0.0,
+    "xmax": 10.0,
+    "ymin": 0.0,
+    "ymax": 20.0
+  }
+}

@@ -2,65 +2,46 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "cone_data.schema.json",
   "title": "ConeData",
-  "description": "Output of detect_cones.py — autocross cone positions in Blender world-space coordinates.",
+  "description": "Pipeline JSON consumed by blender_place_cones.py. Produced by detect_cones.py, detect_cones_pdf.py, or converted from ax-mapper editor JSON via convert_editor_json().",
   "type": "object",
   "required": [
-    "transform", "pointer_source",
-    "n_standing", "n_pointer", "n_timing_start", "n_timing_end", "n_gcp",
-    "bounds", "standing", "pointers", "timing_start", "timing_end", "gcp"
+    "standing", "pointers", "timing_start", "timing_end", "gcp"
   ],
-  "additionalProperties": false,
   "properties": {
 
     "transform": {
-      "description": "Coordinate transform from original image pixels to Blender world-space (metres).",
-      "oneOf": [
-        {
-          "description": "3-point affine transform (6-parameter). bx = ax[0]*px + ax[1]*py + ax[2]; by = ay[0]*px + ay[1]*py + ay[2].",
-          "type": "object",
-          "required": ["type", "ax", "ay"],
-          "additionalProperties": false,
-          "properties": {
-            "type":  { "const": "affine" },
-            "ax": {
-              "description": "[a11, a12, tx] — X-axis row of the affine matrix.",
-              "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-            },
-            "ay": {
-              "description": "[a21, a22, ty] — Y-axis row of the affine matrix.",
-              "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
-            }
-          }
+      "description": "Coordinate transform metadata. Used for chalk UV mapping and road sizing. All fields optional — Blender falls back to safe defaults when absent.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["scale", "affine"],
+          "description": "Discriminator written by detect_cones*.py. May be absent in editor-derived JSON."
         },
-        {
-          "description": "2-point uniform-scale transform. bx = scale*px + ox; by = -scale*py + oy.",
-          "type": "object",
-          "required": ["type", "scale", "ox", "oy"],
-          "additionalProperties": false,
-          "properties": {
-            "type":  { "const": "scale" },
-            "scale": { "type": "number", "description": "Metres per original-image pixel." },
-            "ox":    { "type": "number", "description": "X origin offset (metres)." },
-            "oy":    { "type": "number", "description": "Y origin offset (metres)." }
-          }
+        "scale": { "type": "number", "description": "Metres per source unit (pixels or editor units). Default 0.3048 (1 ft/pt, SCCA PDF scale)." },
+        "ox":    { "type": "number", "description": "X origin offset (metres)." },
+        "oy":    { "type": "number", "description": "Y origin offset (metres)." },
+        "ax": {
+          "description": "Affine X row [a11, a12, tx]. Present only when type=affine.",
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "ay": {
+          "description": "Affine Y row [a21, a22, ty]. Present only when type=affine.",
+          "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3
+        },
+        "page_w_pt": {
+          "type": "number",
+          "description": "Full PDF page width in points. When present with page_h_pt, road is sized to the full page rather than cone extents."
+        },
+        "page_h_pt": {
+          "type": "number",
+          "description": "Full PDF page height in points."
         }
-      ]
+      }
     },
-
-    "pointer_source": {
-      "description": "Which colour channel (raster) or method (vector PDF) was used for pointer cone detection.",
-      "type": "string",
-      "enum": ["magenta", "orange", "pdf"]
-    },
-
-    "n_standing": { "type": "integer", "minimum": 0, "description": "Number of standing (orange) cones detected." },
-    "n_pointer":  { "type": "integer", "minimum": 0, "description": "Number of pointer (lying-flat) cones detected." },
-    "n_timing_start": { "type": "integer", "minimum": 0, "description": "Number of timing-start (green) cones detected." },
-    "n_timing_end":   { "type": "integer", "minimum": 0, "description": "Number of timing-end (red) cones detected." },
-    "n_gcp":          { "type": "integer", "minimum": 0, "description": "Number of GCP reference (blue) dots detected." },
 
     "bounds": {
-      "description": "Axis-aligned bounding box of all standing + pointer cone positions (metres).",
+      "description": "Axis-aligned bounding box of all standing + pointer cone positions (metres). Optional — blender_place_cones.py recomputes from cone arrays if absent.",
       "type": "object",
       "required": ["xmin", "xmax", "ymin", "ymax"],
       "additionalProperties": false,
@@ -70,6 +51,42 @@
         "ymin": { "type": "number" },
         "ymax": { "type": "number" }
       }
+    },
+
+    "stage_cone_pos": {
+      "description": "Position and heading of the car-start marker group. Used to position the driver spawn marker. null or absent if no staging area.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["bx", "by"],
+          "additionalProperties": false,
+          "properties": {
+            "bx": { "type": "number", "description": "Blender X coordinate (metres)." },
+            "by": { "type": "number", "description": "Blender Y coordinate (metres)." },
+            "facing_deg": {
+              "description": "Heading of the staged car (degrees CCW from +X in Blender world space). null or absent if direction was not set in the editor.",
+              "oneOf": [{ "type": "number" }, { "type": "null" }]
+            }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+
+    "timing_start_gate": {
+      "description": "Explicit bar endpoints for the timing-start gate. When present, overrides cone-pair inference. null or absent if none.",
+      "oneOf": [
+        { "$ref": "#/$defs/gate" },
+        { "type": "null" }
+      ]
+    },
+
+    "timing_end_gate": {
+      "description": "Explicit bar endpoints for the timing-finish gate. When present, overrides cone-pair inference. null or absent if none.",
+      "oneOf": [
+        { "$ref": "#/$defs/gate" },
+        { "type": "null" }
+      ]
     },
 
     "standing": {
@@ -97,16 +114,28 @@
     },
 
     "gcp": {
-      "description": "GCP (ground control point) reference dot positions.",
+      "description": "GCP (ground control point) positions for affine alignment in Blender. Exactly 3 entries activates the affine warp; 0 or absent means cones are placed from bx/by directly.",
       "type": "array",
-      "items": { "$ref": "#/$defs/base_cone" }
-    }
+      "items": { "$ref": "#/$defs/gcp_point" }
+    },
+
+    "pointer_source": {
+      "description": "Which colour channel or method was used for pointer cone detection. Present only in detect_cones*.py output.",
+      "type": "string",
+      "enum": ["magenta", "orange", "pdf"]
+    },
+
+    "n_standing":     { "type": "integer", "minimum": 0, "description": "Count of standing cones. Informational." },
+    "n_pointer":      { "type": "integer", "minimum": 0, "description": "Count of pointer cones. Informational." },
+    "n_timing_start": { "type": "integer", "minimum": 0, "description": "Count of timing-start cones. Informational." },
+    "n_timing_end":   { "type": "integer", "minimum": 0, "description": "Count of timing-end cones. Informational." },
+    "n_gcp":          { "type": "integer", "minimum": 0, "description": "Count of GCP reference dots. Informational." }
   },
 
   "$defs": {
 
     "base_cone": {
-      "description": "Minimal cone entry — Blender world-space position and source blob size.",
+      "description": "Minimal cone entry — Blender world-space position, role, and source blob size.",
       "type": "object",
       "required": ["bx", "by", "type", "size"],
       "additionalProperties": false,
@@ -122,6 +151,18 @@
       }
     },
 
+    "gcp_point": {
+      "description": "GCP reference position. Only bx/by are used by Blender; type and size are present when written by detect_cones.py but absent when converted from editor JSON.",
+      "type": "object",
+      "required": ["bx", "by"],
+      "properties": {
+        "bx":   { "type": "number", "description": "Blender X coordinate (metres)." },
+        "by":   { "type": "number", "description": "Blender Y coordinate (metres)." },
+        "type": { "const": "gcp" },
+        "size": { "type": "integer", "minimum": 1 }
+      }
+    },
+
     "standing_cone": {
       "description": "Upright (orange) cone.",
       "allOf": [{ "$ref": "#/$defs/base_cone" }],
@@ -131,37 +172,47 @@
     },
 
     "pointer_cone": {
-      "description": "Lying-flat pointer cone with orientation and snap metadata.",
+      "description": "Lying-flat pointer cone with orientation and optional snap metadata.",
       "type": "object",
-      "required": ["bx", "by", "type", "size", "facing_deg"],
-      "additionalProperties": false,
+      "required": ["bx", "by", "type", "facing_deg"],
       "properties": {
         "bx":   { "type": "number", "description": "Blender X coordinate (metres)." },
         "by":   { "type": "number", "description": "Blender Y coordinate (metres)." },
         "type": { "const": "pointer" },
-        "size": { "type": "integer", "minimum": 1 },
+        "size": { "type": "integer", "minimum": 1, "description": "Pixel area of source blob. Absent in editor-derived JSON." },
         "facing_deg": {
-          "description": "Z-rotation angle (degrees, CCW from +X) so the pointer tip faces toward its standing cone. null if no standing cone was found nearby.",
+          "description": "Z-rotation (degrees, CCW from +X) so the pointer tip faces toward its standing cone. null if no standing cone was nearby.",
           "oneOf": [{ "type": "number" }, { "type": "null" }]
         },
         "nearest_standing_idx": {
           "type": "integer",
           "minimum": 0,
-          "description": "Index into the 'standing' array of the closest standing cone."
+          "description": "Index into 'standing' of the closest standing cone."
         },
         "snapped": {
           "type": "boolean",
-          "description": "True when the position was moved to a physically correct 3-inch increment from its standing cone."
+          "description": "True when position was snapped to a physically correct 3-inch increment from its standing cone."
         },
         "snapped_to_timing": {
           "type": "boolean",
-          "description": "True when snapping used a green/red timing cone as the anchor instead of an orange standing cone."
+          "description": "True when snapping anchor was a timing cone rather than a standing cone."
         },
         "split_from": {
           "type": "integer",
           "minimum": 2,
           "description": "Number of sub-cones this entry was split from when an oversized fused blob was decomposed by PCA."
         }
+      }
+    },
+
+    "gate": {
+      "description": "A timing gate defined by two bar endpoints in Blender world-space.",
+      "type": "object",
+      "required": ["a", "b"],
+      "additionalProperties": false,
+      "properties": {
+        "a": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "Left/first endpoint [bx, by]." },
+        "b": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "Right/second endpoint [bx, by]." }
       }
     }
   }

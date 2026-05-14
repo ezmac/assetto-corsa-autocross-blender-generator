@@ -1,3 +1,4 @@
 generated/
+templates/
 __pycache__/
 *.log

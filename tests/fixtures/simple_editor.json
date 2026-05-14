@@ -1,0 +1,17 @@
+{
+  "name": "test_editor_course",
+  "cones": [
+    {"id": "s1", "coneType": "standing", "x": 100, "y": 200, "rotation": 0},
+    {"id": "s2", "coneType": "standing", "x": 200, "y": 200, "rotation": 0},
+    {"id": "s3", "coneType": "standing", "x": 200, "y": 300, "rotation": 0},
+    {"id": "p1", "coneType": "pointer",  "x": 150, "y": 250, "rotation": 1.5707963268},
+    {"id": "c1", "coneType": "car_start","x": 150, "y": 150, "rotation": 0},
+    {"id": "nx", "coneType": "standing", "x": 50,  "y": 50,  "rotation": 0, "noExport": true},
+    {"id": "g1", "coneType": "gcp", "x":  50, "y": 100, "rotation": 0},
+    {"id": "g2", "coneType": "gcp", "x": 300, "y": 100, "rotation": 0},
+    {"id": "g3", "coneType": "gcp", "x": 300, "y": 400, "rotation": 0}
+  ],
+  "scale": 0.2,
+  "siteW": 400,
+  "siteH": 500
+}
